@@ -11,6 +11,10 @@ meaningfully uses their work.
 and applies the consent policy chosen by the user. It is safe-by-default,
 agent-agnostic, and does not require another AI model.
 
+<p align="center">
+  <img src="docs/assets/agent-thanks-banner.svg" alt="AI: done in 12 seconds. Open source: 12 years in the making. Leave a star." width="900">
+</p>
+
 > Alpha software. Detection is intentionally conservative; keep `ask` mode
 > enabled if you want to approve every repository yourself.
 
@@ -200,7 +204,10 @@ A fine-grained user token needs:
 - `Metadata: read`
 
 Credentials are never written by `agent-thanks`. Star requests are serialized,
-and `unstar` provides an explicit reversal path.
+and `unstar` provides an explicit reversal path. Missing authentication,
+expired credentials, insufficient permissions, and rejected API requests stop
+the command with a non-zero exit code; a failed request is never reported as a
+successful star.
 
 ## Privacy and safety
 
