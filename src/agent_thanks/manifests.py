@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import configparser
 from dataclasses import dataclass
 import json
 from pathlib import PurePosixPath
@@ -31,7 +32,13 @@ _PACKAGE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*")
 
 def is_supported_manifest(path: str) -> bool:
     name = PurePosixPath(path).name
-    return name in {"pyproject.toml", "package.json", "Cargo.toml"} or bool(
+    return name in {
+        ".gitmodules",
+        "go.mod",
+        "pyproject.toml",
+        "package.json",
+        "Cargo.toml",
+    } or bool(
         _REQUIREMENTS_FILE.fullmatch(name)
     )
 
@@ -46,6 +53,10 @@ def parse_manifest(path: str, text: str) -> list[Dependency]:
         return _parse_package_json(text)
     if name == "Cargo.toml":
         return _parse_cargo(text)
+    if name == "go.mod":
+        return _parse_go_mod(text)
+    if name == ".gitmodules":
+        return _parse_gitmodules(text)
     return []
 
 
@@ -159,6 +170,54 @@ def _parse_cargo(text: str) -> list[Dependency]:
         for section in ("dependencies", "dev-dependencies", "build-dependencies"):
             for name, spec in target_config.get(section, {}).items():
                 dependencies.append(_dependency_from_spec("crates", name, spec))
+    return _unique(dependencies)
+
+
+def _parse_go_mod(text: str) -> list[Dependency]:
+    dependencies: list[Dependency] = []
+    in_require_block = False
+    for raw_line in text.splitlines():
+        if "// indirect" in raw_line:
+            continue
+        line = raw_line.split("//", 1)[0].strip()
+        if not line:
+            continue
+        if line == "require (":
+            in_require_block = True
+            continue
+        if in_require_block and line == ")":
+            in_require_block = False
+            continue
+        if line.startswith("require "):
+            value = line.removeprefix("require ").strip()
+        elif in_require_block:
+            value = line
+        else:
+            continue
+
+        values = value.split(maxsplit=1)
+        if not values:
+            continue
+        module = values[0]
+        repository = None
+        if module.casefold().startswith("github.com/"):
+            repository = repository_from_metadata_url(f"https://{module}")
+        dependencies.append(Dependency("go", module, repository))
+    return _unique(dependencies)
+
+
+def _parse_gitmodules(text: str) -> list[Dependency]:
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read_string(text)
+    except configparser.Error as error:
+        raise ValueError(f"invalid .gitmodules file: {error}") from error
+    dependencies: list[Dependency] = []
+    for section in parser.sections():
+        url = parser.get(section, "url", fallback="").strip()
+        repository = repository_from_metadata_url(url)
+        if repository is not None:
+            dependencies.append(Dependency("git", repository, repository))
     return _unique(dependencies)
 
 

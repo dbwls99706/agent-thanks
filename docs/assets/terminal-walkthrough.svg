@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="780" viewBox="0 0 1400 780" role="img" aria-labelledby="title description">
+  <title id="title">agent-thanks terminal walkthrough</title>
+  <desc id="description">A three-dimensional terminal illustration showing repository detection, evidence review, explicit consent, the authenticated GitHub account, a completed Star, and an Undo command.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#07151d"/>
+      <stop offset="1" stop-color="#0b2730"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#20505b"/>
+      <stop offset="1" stop-color="#102f38"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1400" height="780" rx="34" fill="url(#background)"/>
+  <g fill="#244b55" opacity=".75">
+    <circle cx="70" cy="88" r="4"/><circle cx="270" cy="58" r="3"/><circle cx="506" cy="96" r="4"/>
+    <circle cx="786" cy="60" r="3"/><circle cx="1040" cy="90" r="4"/><circle cx="1308" cy="57" r="3"/>
+    <circle cx="61" cy="695" r="3"/><circle cx="1324" cy="706" r="4"/>
+  </g>
+  <path d="M0 688c250-96 435-44 646 2 267 59 443-92 754-15v105H0Z" fill="#0d323b" opacity=".72"/>
+
+  <text x="80" y="82" fill="#f5ead8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="24" font-weight="800" letter-spacing="2">ONE RUN · FULL CONTROL</text>
+  <g transform="translate(1045 48)">
+    <rect width="275" height="52" rx="26" fill="#0b333c" stroke="#39c7c8" stroke-width="2"/>
+    <circle cx="29" cy="26" r="7" fill="#39c7c8"/>
+    <text x="49" y="34" fill="#b9d5d8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="700">ASK MODE · OPT-IN</text>
+  </g>
+
+  <g>
+    <rect x="91" y="172" width="1057" height="544" rx="26" fill="#02090d" opacity=".42"/>
+    <path d="M106 174H1088l58 46v438l-45 42H106Z" fill="url(#edge)"/>
+    <path d="M1088 174l58 46-45 35H106l-34-35 34-46Z" fill="#2b6570" opacity=".55"/>
+    <path d="M1101 255l45-35v438l-45 42Z" fill="#0b222a"/>
+    <path d="M106 700h995l45-42H151Z" fill="#071116" opacity=".9"/>
+
+    <rect x="72" y="136" width="1029" height="522" rx="24" fill="#061116" stroke="#2b606b" stroke-width="4"/>
+    <path d="M72 160q0-24 24-24h981q24 0 24 24v55H72Z" fill="#10313a"/>
+    <circle cx="110" cy="175" r="8" fill="#ff6b4a"/>
+    <circle cx="139" cy="175" r="8" fill="#ffbd2e"/>
+    <circle cx="168" cy="175" r="8" fill="#39c7c8"/>
+    <text x="204" y="183" fill="#9db9be" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="19">agent-thanks — ~/project</text>
+
+    <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22">
+      <text x="112" y="260" fill="#39c7c8">$ agent-thanks run --mode ask</text>
+      <text x="112" y="304" fill="#f5ead8">✓ Found 3 repositories · 2 verified for meaningful use</text>
+
+      <rect x="110" y="333" width="927" height="102" rx="14" fill="#0b2027" stroke="#20505b" stroke-width="2"/>
+      <rect x="130" y="354" width="184" height="31" rx="15" fill="#123d41"/>
+      <text x="147" y="377" fill="#39c7c8" font-size="18" font-weight="700">VERIFIED · HIGH</text>
+      <text x="334" y="378" fill="#f5ead8">github.com/owner/project</text>
+      <text x="130" y="414" fill="#8eacb1" font-size="19">go.mod · direct dependency added in this task</text>
+
+      <text x="112" y="478" fill="#ffbd2e">? Star this repository? [y/N/q]</text>
+      <rect x="544" y="451" width="43" height="39" rx="8" fill="#173c39" stroke="#39c7c8" stroke-width="2"/>
+      <text x="557" y="478" fill="#39c7c8" font-weight="800">y</text>
+
+      <text x="112" y="525" fill="#9db9be">GitHub account:</text>
+      <text x="320" y="525" fill="#f5ead8">@octocat</text>
+      <text x="112" y="568" fill="#ffbd2e">★ Starred:</text>
+      <text x="261" y="568" fill="#f5ead8">github.com/owner/project</text>
+      <text x="112" y="611" fill="#39c7c8" font-size="18">↶ Undo this batch: agent-thanks unstar owner/project</text>
+    </g>
+  </g>
+
+  <g font-family="Inter, ui-sans-serif, system-ui, sans-serif">
+    <path d="M1193 238v310" stroke="#2a6972" stroke-width="4" stroke-linecap="round"/>
+    <g transform="translate(1170 216)">
+      <circle cx="23" cy="23" r="23" fill="#39c7c8"/>
+      <text x="23" y="31" text-anchor="middle" fill="#07151d" font-size="20" font-weight="900">1</text>
+      <text x="62" y="18" fill="#39c7c8" font-size="18" font-weight="900" letter-spacing="2">DETECT</text>
+      <text x="62" y="43" fill="#91adb2" font-size="16">Find evidence</text>
+    </g>
+    <g transform="translate(1170 354)">
+      <circle cx="23" cy="23" r="23" fill="#f5ead8"/>
+      <text x="23" y="31" text-anchor="middle" fill="#07151d" font-size="20" font-weight="900">2</text>
+      <text x="62" y="18" fill="#f5ead8" font-size="18" font-weight="900" letter-spacing="2">REVIEW</text>
+      <text x="62" y="43" fill="#91adb2" font-size="16">You decide</text>
+    </g>
+    <g transform="translate(1170 492)">
+      <circle cx="23" cy="23" r="23" fill="#ffbd2e"/>
+      <text x="23" y="31" text-anchor="middle" fill="#07151d" font-size="20" font-weight="900">3</text>
+      <text x="62" y="18" fill="#ffbd2e" font-size="18" font-weight="900" letter-spacing="2">THANK</text>
+      <text x="62" y="43" fill="#91adb2" font-size="16">Star + receipt</text>
+    </g>
+  </g>
+
+  <text x="700" y="744" text-anchor="middle" fill="#b9d5d8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="23" font-weight="700">Nothing changes before your choice. Every completed batch stays reversible.</text>
+</svg>

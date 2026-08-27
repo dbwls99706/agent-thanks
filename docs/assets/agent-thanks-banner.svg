@@ -11,7 +11,7 @@
   <text x="52" y="92" fill="#f4ead7" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="46" font-weight="800" letter-spacing="-1">
     <tspan fill="#38c7c7">AI:</tspan><tspan> DONE IN 12 SECONDS.</tspan>
   </text>
-  <text x="823" y="92" fill="#f4ead7" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="37" font-weight="800" letter-spacing="-.5">
+  <text x="797" y="92" fill="#f4ead7" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="34" font-weight="800" letter-spacing="-.5">
     <tspan fill="#ff6b4a">OPEN SOURCE:</tspan><tspan> 12 YEARS IN THE MAKING.</tspan>
   </text>
 
@@ -45,7 +45,7 @@
     <circle cx="618" cy="241" r="5"/><circle cx="958" cy="270" r="5"/>
   </g>
 
-  <g transform="translate(1112 153)" stroke-linecap="round" stroke-linejoin="round">
+  <g transform="translate(1100 153)" stroke-linecap="round" stroke-linejoin="round">
     <g transform="translate(0 36)">
       <rect x="0" y="49" width="176" height="82" rx="12" fill="#38c7c7" stroke="#08151d" stroke-width="7"/>
       <rect x="55" y="4" width="177" height="82" rx="12" fill="#f4ead7" stroke="#08151d" stroke-width="7"/>

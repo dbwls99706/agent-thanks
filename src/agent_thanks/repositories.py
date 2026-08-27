@@ -10,6 +10,10 @@ _WEB_PATTERN = re.compile(
     rf"(?:https?://|git://)(?:www\.)?github\.com/(?P<owner>{_OWNER})/(?P<repo>{_REPO})",
     re.IGNORECASE,
 )
+_BARE_PATTERN = re.compile(
+    rf"(?<![A-Za-z0-9.-])(?:www\.)?github\.com/(?P<owner>{_OWNER})/(?P<repo>{_REPO})",
+    re.IGNORECASE,
+)
 _SSH_PATTERN = re.compile(
     rf"(?:git@github\.com:|ssh://git@github\.com/)(?P<owner>{_OWNER})/(?P<repo>{_REPO})",
     re.IGNORECASE,
@@ -32,7 +36,7 @@ def normalize_repository(owner: str, repo: str) -> str | None:
 def extract_github_repositories(text: str) -> list[str]:
     found: list[str] = []
     seen: set[str] = set()
-    for pattern in (_WEB_PATTERN, _SSH_PATTERN, _RAW_PATTERN):
+    for pattern in (_WEB_PATTERN, _SSH_PATTERN, _RAW_PATTERN, _BARE_PATTERN):
         for match in pattern.finditer(text):
             repository = normalize_repository(match.group("owner"), match.group("repo"))
             if repository is not None and repository.casefold() not in seen:

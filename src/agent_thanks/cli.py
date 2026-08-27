@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import time
 from typing import Sequence
@@ -99,6 +101,12 @@ def build_parser() -> argparse.ArgumentParser:
     unstar.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
     unstar.add_argument("--dry-run", action="store_true", help="Show actions without unstarring")
 
+    doctor = commands.add_parser(
+        "doctor",
+        help="Check the local project, consent policy, and GitHub authentication",
+    )
+    doctor.add_argument("--repo", type=Path, default=Path.cwd(), help="Project root")
+
     return parser
 
 
@@ -145,6 +153,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _config(args)
         if args.command == "unstar":
             return _unstar(args)
+        if args.command == "doctor":
+            return _doctor(args)
     except (OSError, ValueError, ConfigError, ScanError, GitHubError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
@@ -307,14 +317,30 @@ def _execute_stars(selected: list[Candidate], *, dry_run: bool) -> int:
         print("No repositories selected.")
         return 0
 
-    action = "Would star" if dry_run else "Starred"
+    if dry_run:
+        for candidate in selected:
+            print(f"Would star: https://github.com/{candidate.repository}")
+        return 0
+
     client = GitHubClient()
-    for index, candidate in enumerate(selected):
-        if not dry_run:
-            client.star(candidate.repository)
+    print(f"GitHub account: @{client.whoami()}")
+    newly_starred: list[str] = []
+    try:
+        for index, candidate in enumerate(selected):
+            if client.is_starred(candidate.repository):
+                print(f"Already starred: https://github.com/{candidate.repository}")
+            else:
+                client.star(candidate.repository)
+                newly_starred.append(candidate.repository)
+                print(f"Starred: https://github.com/{candidate.repository}")
             if index + 1 < len(selected):
                 time.sleep(0.25)
-        print(f"{action}: https://github.com/{candidate.repository}")
+    except (GitHubError, OSError):
+        if newly_starred:
+            print("The batch stopped after a partial update.")
+            _print_undo(newly_starred)
+        raise
+    _print_undo(newly_starred)
     return 0
 
 
@@ -326,14 +352,83 @@ def _unstar(args: argparse.Namespace) -> int:
             print("Cancelled.")
             return 0
 
-    action = "Would unstar" if args.dry_run else "Unstarred"
+    if args.dry_run:
+        for repository in repositories:
+            print(f"Would unstar: https://github.com/{repository}")
+        return 0
+
     client = GitHubClient()
+    print(f"GitHub account: @{client.whoami()}")
     for index, repository in enumerate(repositories):
-        if not args.dry_run:
+        if client.is_starred(repository):
             client.unstar(repository)
-            if index + 1 < len(repositories):
-                time.sleep(0.25)
-        print(f"{action}: https://github.com/{repository}")
+            print(f"Unstarred: https://github.com/{repository}")
+        else:
+            print(f"Not starred: https://github.com/{repository}")
+        if index + 1 < len(repositories):
+            time.sleep(0.25)
+    return 0
+
+
+def _print_undo(repositories: list[str]) -> None:
+    if not repositories:
+        return
+    values = " ".join(repositories)
+    print(f"Undo this batch: agent-thanks unstar {values}")
+
+
+def _doctor(args: argparse.Namespace) -> int:
+    print(f"agent-thanks {__version__} doctor")
+    issues = 0
+
+    python_version = ".".join(str(value) for value in sys.version_info[:3])
+    if sys.version_info >= (3, 10):
+        print(f"[ok] Python {python_version}")
+    else:  # pragma: no cover - the package cannot import on unsupported Python
+        print(f"[!!] Python {python_version}; Python 3.10 or newer is required")
+        issues += 1
+
+    if shutil.which("git"):
+        print("[ok] Git is available")
+    else:
+        print("[!!] Git is not available on PATH")
+        issues += 1
+
+    root = args.repo.expanduser().resolve()
+    if not root.is_dir():
+        print(f"[!!] Project directory does not exist: {root}")
+        issues += 1
+    else:
+        result = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+        ) if shutil.which("git") else None
+        if result is not None and result.returncode == 0:
+            print(f"[ok] Git project: {root}")
+        else:
+            print(f"[--] Non-Git project: {root} (current manifests will be scanned)")
+
+    store = ConfigStore()
+    try:
+        settings = store.load()
+        saved = "saved" if store.exists else "safe default, not saved"
+        print(f"[ok] Consent mode: {settings.consent_mode} ({saved})")
+    except ConfigError as error:
+        print(f"[!!] Consent configuration: {error}")
+        issues += 1
+
+    try:
+        login = GitHubClient().whoami()
+        print(f"[ok] GitHub account: @{login}")
+    except GitHubError as error:
+        print(f"[!!] GitHub authentication: {error}")
+        issues += 1
+
+    if issues:
+        print(f"Doctor found {issues} issue(s).")
+        return 1
+    print("Ready to review and star repositories.")
     return 0
 
 

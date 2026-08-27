@@ -50,6 +50,40 @@ rich = { git = "https://github.com/Textualize/rich.git" }
         local = next(item for item in dependencies if item.name == "local-lib")
         self.assertEqual(local.repository, "acme/local-lib")
 
+    def test_go_mod_github_dependencies(self) -> None:
+        dependencies = parse_manifest(
+            "go.mod",
+            "module example.com/app\n\n"
+            "require github.com/spf13/cobra v1.8.1\n"
+            "require (\n"
+            "  github.com/stretchr/testify v1.9.0\n"
+            "  golang.org/x/sync v0.8.0 // indirect\n"
+            ")\n",
+        )
+
+        by_name = {dependency.name: dependency for dependency in dependencies}
+        self.assertEqual(by_name["github.com/spf13/cobra"].repository, "spf13/cobra")
+        self.assertEqual(
+            by_name["github.com/stretchr/testify"].repository,
+            "stretchr/testify",
+        )
+        self.assertNotIn("golang.org/x/sync", by_name)
+
+    def test_gitmodules_repositories(self) -> None:
+        dependencies = parse_manifest(
+            ".gitmodules",
+            '[submodule "vendor/demo"]\n'
+            "  path = vendor/demo\n"
+            "  url = git@github.com:acme/demo.git\n",
+        )
+
+        self.assertEqual(len(dependencies), 1)
+        self.assertEqual(dependencies[0].repository, "acme/demo")
+
+    def test_malformed_gitmodules_is_reported_as_a_parse_error(self) -> None:
+        with self.assertRaisesRegex(ValueError, "invalid .gitmodules"):
+            parse_manifest(".gitmodules", '[submodule "broken"\nurl = nope\n')
+
 
 if __name__ == "__main__":
     unittest.main()
