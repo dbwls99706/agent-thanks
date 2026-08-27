@@ -13,11 +13,17 @@ class RepositoryParsingTests(unittest.TestCase):
                 "https://github.com/owner/project/tree/main",
                 "git@github.com:Other/repo.git",
                 "https://raw.githubusercontent.com/raw-owner/raw-repo/main/file.py",
+                "go get github.com/bare-owner/bare-repo/cmd/tool",
             ]
         )
         self.assertEqual(
             extract_github_repositories(text),
-            ["owner/project", "Other/repo", "raw-owner/raw-repo"],
+            [
+                "owner/project",
+                "Other/repo",
+                "raw-owner/raw-repo",
+                "bare-owner/bare-repo",
+            ],
         )
 
     def test_deduplicates_case_insensitively(self) -> None:

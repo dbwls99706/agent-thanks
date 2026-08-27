@@ -27,7 +27,10 @@ _MEANINGFUL_SESSION_MARKERS = (
     "pip install git+",
     "uv add git+",
     "cargo add --git",
+    "go get github.com/",
     "npm install github:",
+    "pnpm add github:",
+    "yarn add github:",
     "copied from",
     "adapted from",
     "used code from",
@@ -53,6 +56,7 @@ class ProjectScanner:
     def scan(self, session_files: Iterable[Path] = ()) -> Report:
         evidence_items: list[tuple[str, Evidence]] = []
         unresolved: list[UnresolvedDependency] = []
+        baseline_identities = self._baseline_dependency_identities()
 
         for path, before, after in self._manifest_snapshots():
             try:
@@ -61,7 +65,11 @@ class ProjectScanner:
             except (ValueError, TypeError) as error:
                 raise ScanError(f"Could not parse {path}: {error}") from error
 
-            old_identities = {item.identity for item in old_dependencies}
+            old_identities = (
+                baseline_identities
+                if baseline_identities is not None
+                else {item.identity for item in old_dependencies}
+            )
             for dependency in new_dependencies:
                 if dependency.identity in old_identities:
                     continue
@@ -124,6 +132,28 @@ class ProjectScanner:
             text=True,
         )
 
+    def _baseline_dependency_identities(self) -> set[tuple[str, str]] | None:
+        if not self._is_git_repository() or not self._base_exists():
+            return None
+
+        identities: set[tuple[str, str]] = set()
+        paths = self._git(
+            "ls-tree", "-r", "--name-only", self.base, "--"
+        ).stdout.splitlines()
+        for path in paths:
+            relative = PurePosixPath(path).as_posix()
+            if not is_supported_manifest(relative):
+                continue
+            result = self._git("show", f"{self.base}:{relative}", check=False)
+            if result.returncode != 0:
+                continue
+            try:
+                dependencies = parse_manifest(relative, result.stdout)
+            except (ValueError, TypeError) as error:
+                raise ScanError(f"Could not parse {relative} at {self.base}: {error}") from error
+            identities.update(dependency.identity for dependency in dependencies)
+        return identities
+
     def _manifest_snapshots(self) -> list[tuple[str, str | None, str]]:
         is_git = self._is_git_repository()
         has_base = self._base_exists() if is_git else False
@@ -142,26 +172,49 @@ class ProjectScanner:
             return sorted(snapshots)
 
         changed = self._git(
-            "diff", "--name-only", "--diff-filter=ACMR", self.base, "--"
+            "diff",
+            "--name-status",
+            "--find-renames",
+            "--diff-filter=ACMR",
+            self.base,
+            "--",
         ).stdout.splitlines()
         untracked = self._git(
             "ls-files", "--others", "--exclude-standard"
         ).stdout.splitlines()
-        paths = sorted(
-            {
-                PurePosixPath(path).as_posix()
-                for path in [*changed, *untracked]
-                if is_supported_manifest(path)
-            }
-        )
+
+        paths: dict[str, str | None] = {}
+        for change in changed:
+            fields = change.split("\t")
+            status = fields[0]
+            if status.startswith(("R", "C")) and len(fields) >= 3:
+                before_path = PurePosixPath(fields[1]).as_posix()
+                relative = PurePosixPath(fields[2]).as_posix()
+            elif len(fields) >= 2:
+                relative = PurePosixPath(fields[1]).as_posix()
+                before_path = None if status.startswith("A") else relative
+            else:
+                continue
+            if is_supported_manifest(relative):
+                paths[relative] = before_path
+
+        for path in untracked:
+            relative = PurePosixPath(path).as_posix()
+            if is_supported_manifest(relative):
+                paths[relative] = None
 
         snapshots = []
-        for relative in paths:
+        for relative, before_path in sorted(paths.items()):
             current_path = self.root / relative
             if not current_path.is_file():
                 continue
-            before_result = self._git("show", f"{self.base}:{relative}", check=False)
-            before = before_result.stdout if before_result.returncode == 0 else None
+            before = None
+            if before_path is not None:
+                before_result = self._git(
+                    "show", f"{self.base}:{before_path}", check=False
+                )
+                if before_result.returncode == 0:
+                    before = before_result.stdout
             snapshots.append((relative, before, current_path.read_text(encoding="utf-8")))
         return snapshots
 

@@ -71,6 +71,110 @@ class ScannerTests(unittest.TestCase):
             self.assertIsNone(report.base)
             self.assertEqual(report.candidates[0].repository, "acme/demo")
 
+    def test_pure_manifest_rename_does_not_recommend_existing_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git(root, "init")
+            git(root, "config", "user.name", "Test")
+            git(root, "config", "user.email", "test@example.com")
+            manifest = root / "package.json"
+            manifest.write_text(
+                '{"dependencies":{"tool":"github:owner/tool"}}\n',
+                encoding="utf-8",
+            )
+            git(root, "add", "package.json")
+            git(root, "commit", "-m", "base")
+
+            frontend = root / "frontend"
+            frontend.mkdir()
+            git(root, "mv", "package.json", "frontend/package.json")
+
+            report = ProjectScanner(
+                root,
+                resolver=PackageRepositoryResolver(offline=True),
+            ).scan()
+
+            self.assertEqual(report.candidates, [])
+
+    def test_manifest_rename_reports_only_dependencies_added_after_the_move(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git(root, "init")
+            git(root, "config", "user.name", "Test")
+            git(root, "config", "user.email", "test@example.com")
+            manifest = root / "package.json"
+            manifest.write_text(
+                '{"dependencies":{"existing":"github:owner/existing"}}\n',
+                encoding="utf-8",
+            )
+            git(root, "add", "package.json")
+            git(root, "commit", "-m", "base")
+
+            frontend = root / "frontend"
+            frontend.mkdir()
+            git(root, "mv", "package.json", "frontend/package.json")
+            (frontend / "package.json").write_text(
+                "{\"dependencies\":{"
+                "\"existing\":\"github:owner/existing\","
+                "\"added\":\"github:owner/added\"}}\n",
+                encoding="utf-8",
+            )
+
+            report = ProjectScanner(
+                root,
+                resolver=PackageRepositoryResolver(offline=True),
+            ).scan()
+
+            self.assertEqual(
+                [candidate.repository for candidate in report.candidates],
+                ["owner/added"],
+            )
+
+    def test_scans_new_go_module_without_a_registry_lookup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git(root, "init")
+            git(root, "config", "user.name", "Test")
+            git(root, "config", "user.email", "test@example.com")
+            manifest = root / "go.mod"
+            manifest.write_text("module example.com/app\n", encoding="utf-8")
+            git(root, "add", "go.mod")
+            git(root, "commit", "-m", "base")
+
+            manifest.write_text(
+                "module example.com/app\n\n"
+                "require github.com/spf13/cobra v1.8.1\n",
+                encoding="utf-8",
+            )
+            report = ProjectScanner(
+                root,
+                resolver=PackageRepositoryResolver(offline=True),
+            ).scan()
+
+            self.assertEqual(
+                [candidate.repository for candidate in report.candidates],
+                ["spf13/cobra"],
+            )
+
+    def test_scans_new_git_submodule_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".gitmodules").write_text(
+                '[submodule "vendor/demo"]\n'
+                "  path = vendor/demo\n"
+                "  url = https://github.com/acme/demo.git\n",
+                encoding="utf-8",
+            )
+            report = ProjectScanner(
+                root,
+                resolver=PackageRepositoryResolver(offline=True),
+            ).scan()
+
+            self.assertEqual(
+                [candidate.repository for candidate in report.candidates],
+                ["acme/demo"],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

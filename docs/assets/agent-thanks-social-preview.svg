@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title description">
+  <title id="title">agent-thanks</title>
+  <desc id="description">A consent-first gratitude loop for open source used during AI-assisted coding.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#07151d"/>
+      <stop offset="1" stop-color="#0d2931"/>
+    </linearGradient>
+    <linearGradient id="star" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffd260"/>
+      <stop offset="1" stop-color="#ffad20"/>
+    </linearGradient>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+  </defs>
+
+  <rect width="1280" height="640" rx="32" fill="url(#background)"/>
+  <path d="M0 502C229 424 407 533 636 474s413-35 644 54v112H0Z" fill="#0d3540" opacity=".55"/>
+  <g fill="#24515a" opacity=".65">
+    <circle cx="82" cy="78" r="3"/><circle cx="188" cy="118" r="4"/><circle cx="345" cy="70" r="3"/>
+    <circle cx="746" cy="91" r="4"/><circle cx="1018" cy="73" r="3"/><circle cx="1194" cy="137" r="4"/>
+    <circle cx="1090" cy="514" r="3"/><circle cx="910" cy="559" r="4"/><circle cx="182" cy="540" r="3"/>
+  </g>
+
+  <g transform="translate(72 66)">
+    <path d="m39 0 11 24 26 3-19 18 5 26-23-13-24 13 5-26L1 27l26-3Z" fill="url(#star)"/>
+    <text x="96" y="55" fill="#f4ead7" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="60" font-weight="850" letter-spacing="-2">agent-thanks</text>
+    <rect x="483" y="12" width="162" height="50" rx="25" fill="#14343d" stroke="#38c7c7" stroke-width="2"/>
+    <text x="564" y="45" text-anchor="middle" fill="#38c7c7" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="21" font-weight="750">OPEN SOURCE</text>
+  </g>
+
+  <text x="78" y="190" fill="#f4ead7" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="42" font-weight="760" letter-spacing="-.8">
+    Thank the projects behind the code.
+  </text>
+  <text x="80" y="235" fill="#91aeb4" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="25" font-weight="500">
+    Detect meaningful use. Review the evidence. Star with consent.
+  </text>
+
+  <g transform="translate(76 286)">
+    <rect width="730" height="258" rx="22" fill="#061016" stroke="#24515a" stroke-width="3"/>
+    <rect width="730" height="46" rx="22" fill="#102b34"/>
+    <path d="M0 24h730v22H0Z" fill="#102b34"/>
+    <circle cx="27" cy="23" r="7" fill="#ff6b4a"/>
+    <circle cx="51" cy="23" r="7" fill="#ffbd2e"/>
+    <circle cx="75" cy="23" r="7" fill="#38c7c7"/>
+    <text x="28" y="88" fill="#38c7c7" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="22">$ agent-thanks run --dry-run</text>
+    <text x="28" y="130" fill="#f4ead7" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="21">✓ Found 3 repositories</text>
+    <text x="28" y="169" fill="#f4ead7" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="21">✓ Evidence attached to every match</text>
+    <text x="28" y="208" fill="#ffbd2e" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="21">★ Your choice: ask every time or auto</text>
+  </g>
+
+  <g transform="translate(910 300)">
+    <circle cx="139" cy="120" r="126" fill="#ffbd2e" opacity=".13" filter="url(#glow)"/>
+    <path d="m139 0 38 78 86 12-62 60 15 85-77-41-77 41 15-85-62-60 86-12Z" fill="url(#star)" stroke="#ffe08a" stroke-width="5"/>
+    <path d="M105 118h68M139 84v68" stroke="#7a4d00" stroke-width="11" stroke-linecap="round" opacity=".82"/>
+  </g>
+
+  <g transform="translate(829 552)" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="19" font-weight="800" letter-spacing="2">
+    <text x="0" y="0" fill="#38c7c7">DETECT</text>
+    <circle cx="98" cy="-7" r="3" fill="#54747a"/>
+    <text x="117" y="0" fill="#f4ead7">REVIEW</text>
+    <circle cx="219" cy="-7" r="3" fill="#54747a"/>
+    <text x="238" y="0" fill="#ffbd2e">THANK</text>
+  </g>
+
+  <text x="80" y="604" fill="#66868d" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18">github.com/dbwls99706/agent-thanks</text>
+</svg>
