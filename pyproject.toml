@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-thanks"
-version = "0.2.0"
+version = "0.3.0"
 description = "Detect and thank open-source repositories meaningfully used during an AI coding session."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -19,6 +19,8 @@ classifiers = [
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Software Development :: Version Control :: Git",
 ]
 dependencies = [
@@ -27,7 +29,10 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/dbwls99706/agent-thanks"
+Changelog = "https://github.com/dbwls99706/agent-thanks/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/dbwls99706/agent-thanks#readme"
 Issues = "https://github.com/dbwls99706/agent-thanks/issues"
+Source = "https://github.com/dbwls99706/agent-thanks"
 
 [project.scripts]
 agent-thanks = "agent_thanks.cli:main"

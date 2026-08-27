@@ -6,6 +6,7 @@ Search existing GitHub Issues before opening a new one. If the question has not
 been answered, open an issue with:
 
 - `agent-thanks --version` output
+- `agent-thanks doctor --repo .` output with local paths sanitized
 - Operating system and Python version
 - The command that was run
 - Sanitized output or a minimal reproduction
