@@ -9,7 +9,7 @@ import time
 from typing import Sequence
 
 from . import __version__
-from .config import CONSENT_MODES, ConfigError, ConfigStore, Settings
+from .exporter import render_markdown
 from .github import GitHubClient, GitHubError, validate_repository
 from .models import Candidate, Evidence, Report
 from .resolver import PackageRepositoryResolver
@@ -19,12 +19,16 @@ from .scanner import ProjectScanner, ScanError
 DEFAULT_REPORT = ".agent-thanks-report.json"
 
 
+class InteractionError(RuntimeError):
+    pass
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="agent-thanks",
         description=(
             "Find open-source repositories meaningfully used during an AI coding "
-            "session and thank them using your chosen consent policy."
+            "session and review the evidence before thanking them."
         ),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -37,14 +41,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = commands.add_parser(
         "run",
-        help="Scan and apply the saved ask/auto consent policy in one command",
+        help="Scan, review, and ask for each eligible Star in one command",
     )
     _add_scan_arguments(run)
-    run.add_argument(
-        "--mode",
-        choices=CONSENT_MODES,
-        help="Override the saved consent mode for this run only",
-    )
     run.add_argument("--dry-run", action="store_true", help="Show actions without starring")
 
     scan = commands.add_parser(
@@ -59,7 +58,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     review.add_argument("report", nargs="?", type=Path, default=Path(DEFAULT_REPORT))
 
-    star = commands.add_parser("star", help="Apply a consent policy to a saved report")
+    export = commands.add_parser(
+        "export",
+        help="Export a report as shareable Markdown without changing GitHub",
+    )
+    export.add_argument("report", nargs="?", type=Path, default=Path(DEFAULT_REPORT))
+    export.add_argument(
+        "--output",
+        type=Path,
+        default=Path("-"),
+        help="Markdown path, or '-' for stdout (default: -)",
+    )
+    export.add_argument(
+        "--include-low-confidence",
+        action="store_true",
+        help="Include a separate section for references that require review",
+    )
+
+    star = commands.add_parser(
+        "star",
+        help="Ask for explicit approval before each eligible Star in a saved report",
+    )
     star.add_argument("report", nargs="?", type=Path, default=Path(DEFAULT_REPORT))
     star.add_argument(
         "--repo",
@@ -68,47 +87,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Star only this owner/repo; repeatable",
     )
-    star.add_argument(
-        "--mode",
-        choices=CONSENT_MODES,
-        help="Override the saved consent mode for this command only",
-    )
-    star.add_argument(
-        "--yes",
-        action="store_true",
-        help="Skip prompts and star recommended candidates only",
-    )
-    star.add_argument(
-        "--all",
-        action="store_true",
-        help="Include low-confidence references; requires --yes",
-    )
     star.add_argument("--dry-run", action="store_true", help="Show actions without starring")
-
-    config = commands.add_parser(
-        "config",
-        help="Choose whether to ask every time or star verified repositories automatically",
-    )
-    config_group = config.add_mutually_exclusive_group()
-    config_group.add_argument(
-        "--mode",
-        choices=CONSENT_MODES,
-        help="Save ask or auto as the default consent mode",
-    )
-    config_group.add_argument(
-        "--show",
-        action="store_true",
-        help="Show the current consent mode and config path",
-    )
 
     unstar = commands.add_parser("unstar", help="Revoke stars previously granted")
     unstar.add_argument("repositories", nargs="+", metavar="OWNER/REPO")
-    unstar.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
     unstar.add_argument("--dry-run", action="store_true", help="Show actions without unstarring")
 
     doctor = commands.add_parser(
         "doctor",
-        help="Check the local project, consent policy, and GitHub authentication",
+        help="Check the local project and GitHub authentication",
     )
     doctor.add_argument("--repo", type=Path, default=Path.cwd(), help="Project root")
 
@@ -154,15 +141,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _scan(args)
         if args.command == "review":
             return _review(args.report)
+        if args.command == "export":
+            return _export(args)
         if args.command == "star":
             return _star(args)
-        if args.command == "config":
-            return _config(args)
         if args.command == "unstar":
             return _unstar(args)
         if args.command == "doctor":
             return _doctor(args)
-    except (OSError, ValueError, ConfigError, ScanError, GitHubError) as error:
+    except (OSError, ValueError, InteractionError, ScanError, GitHubError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
@@ -225,7 +212,7 @@ def _demo() -> int:
     print("\nDry-run actions for verified, meaningful-use repositories:")
     selected = [candidate for candidate in report.candidates if candidate.recommended]
     status = _execute_stars(selected, dry_run=True)
-    print("\nNext: agent-thanks config, then agent-thanks run --repo . --dry-run")
+    print("\nNext: agent-thanks run --repo . --dry-run")
     return status
 
 
@@ -249,11 +236,11 @@ def _scan(args: argparse.Namespace) -> int:
 def _run(args: argparse.Namespace) -> int:
     if str(args.output) == "-":
         raise ValueError("run cannot use --output -. Use scan for JSON-only output.")
-    mode = _resolve_consent_mode(args.mode)
     report = _build_report(args)
     _write_report(report, args.output)
-    selected = _select_by_mode(report.candidates, mode)
-    return _execute_stars(selected, dry_run=args.dry_run)
+    eligible = _eligible_candidates(report.candidates)
+    _print_ineligible_summary(report.candidates)
+    return _review_and_star(eligible, dry_run=args.dry_run)
 
 
 def _review(path: Path) -> int:
@@ -262,9 +249,22 @@ def _review(path: Path) -> int:
     return 0
 
 
+def _export(args: argparse.Namespace) -> int:
+    report = Report.read(args.report)
+    markdown = render_markdown(
+        report,
+        include_low_confidence=args.include_low_confidence,
+    )
+    if str(args.output) == "-":
+        print(markdown, end="")
+    else:
+        output = args.output.expanduser().resolve()
+        output.write_text(markdown, encoding="utf-8")
+        print(f"Markdown: {output}")
+    return 0
+
+
 def _star(args: argparse.Namespace) -> int:
-    if args.all and not args.yes:
-        raise ValueError("--all requires --yes to make bulk intent explicit")
     report = Report.read(args.report)
     requested = {validate_repository(item).casefold() for item in args.repositories}
 
@@ -275,103 +275,79 @@ def _star(args: argparse.Namespace) -> int:
             raise ValueError(
                 f"Repositories are not present in the report: {', '.join(sorted(missing))}"
             )
-    elif args.yes:
-        selected = [item for item in report.candidates if args.all or item.recommended]
+        ineligible = [item.repository for item in selected if not item.recommended]
+        if ineligible:
+            raise ValueError(
+                "Cannot star candidates without high-confidence meaningful-use evidence: "
+                + ", ".join(sorted(ineligible, key=str.casefold))
+            )
     else:
-        mode = _resolve_consent_mode(args.mode)
-        selected = _select_by_mode(report.candidates, mode)
+        selected = _eligible_candidates(report.candidates)
+        _print_ineligible_summary(report.candidates)
 
-    return _execute_stars(selected, dry_run=args.dry_run)
+    return _review_and_star(selected, dry_run=args.dry_run)
 
 
-def _config(args: argparse.Namespace) -> int:
-    store = ConfigStore()
-    if args.show:
-        if store.exists:
-            settings = store.load()
-            print(f"Consent mode: {settings.consent_mode}")
-        else:
-            print("Consent mode: ask (safe default; not saved yet)")
-        print(f"Config file: {store.path}")
+def _eligible_candidates(candidates: list[Candidate]) -> list[Candidate]:
+    return [candidate for candidate in candidates if candidate.recommended]
+
+
+def _print_ineligible_summary(candidates: list[Candidate]) -> None:
+    count = sum(not candidate.recommended for candidate in candidates)
+    if count:
+        print(
+            f"Review only: {count} candidate(s) lack high-confidence "
+            "meaningful-use evidence and cannot be starred."
+        )
+
+
+def _review_and_star(selected: list[Candidate], *, dry_run: bool) -> int:
+    for candidate in selected:
+        validate_repository(candidate.repository)
+    if dry_run:
+        return _execute_stars(selected, dry_run=True)
+    if not selected:
+        print("No repositories eligible for starring.")
         return 0
 
-    if args.mode:
-        settings = Settings(consent_mode=args.mode)
-        store.save(settings)
-    else:
-        settings = _interactive_configuration(store)
-    _print_saved_mode(settings, store.path)
-    return 0
+    _require_interactive_terminal("Starring")
+    client = GitHubClient()
+    print(f"GitHub account: @{client.whoami()}")
+    pending = _exclude_existing_stars(selected, client)
+    if not pending:
+        print("No unstarred repositories require a decision.")
+        return 0
+    print("Each new Star requires an explicit yes. The default is No.")
+    approved = _interactive_selection(pending)
+    return _execute_stars(
+        approved,
+        dry_run=False,
+        client=client,
+        known_unstarred=True,
+    )
 
 
-def _resolve_consent_mode(override: str | None) -> str:
-    if override is not None:
-        return override
-    store = ConfigStore()
-    if store.exists:
-        return store.load().consent_mode
-    print("No consent policy has been configured yet.\n")
-    return _interactive_configuration(store).consent_mode
+def _exclude_existing_stars(
+    candidates: list[Candidate], client: GitHubClient
+) -> list[Candidate]:
+    pending: list[Candidate] = []
+    for index, candidate in enumerate(candidates):
+        if client.is_starred(candidate.repository):
+            print(f"Already starred: https://github.com/{candidate.repository}")
+        else:
+            pending.append(candidate)
+        if index + 1 < len(candidates):
+            time.sleep(0.25)
+    return pending
 
 
-def _interactive_configuration(store: ConfigStore) -> Settings:
-    print("How should agent-thanks handle repositories with verified, meaningful use?")
-    print("  1. Ask every time — show each repository and wait for yes/no (recommended)")
-    print("  2. Auto star all — star every verified repository without another prompt")
-    print("\nViewed-only and low-confidence repositories are never auto-starred.")
-
-    while True:
-        try:
-            answer = input("Choose [1/2] (default: 1): ").strip().casefold()
-        except EOFError as error:
-            raise ConfigError(
-                "No interactive input is available. Run "
-                "'agent-thanks config --mode ask' or '--mode auto' first."
-            ) from error
-        if answer in {"", "1", "ask", "a"}:
-            settings = Settings(consent_mode="ask")
-            break
-        if answer in {"2", "auto"}:
-            settings = Settings(consent_mode="auto")
-            break
-        print("Please enter 1 for ask or 2 for auto.")
-
-    store.save(settings)
-    return settings
-
-
-def _print_saved_mode(settings: Settings, path: Path) -> None:
-    if settings.consent_mode == "ask":
-        print("Saved consent mode: ask — every candidate requires an explicit yes/no.")
-    else:
-        print(
-            "Saved consent mode: auto — all verified, meaningful-use repositories "
-            "will be starred automatically."
-        )
-    print(f"Config file: {path}")
-
-
-def _select_by_mode(candidates: list[Candidate], mode: str) -> list[Candidate]:
-    if mode == "ask":
-        print("Consent mode: ask — reviewing repositories one by one.")
-        return _interactive_selection(candidates)
-    if mode == "auto":
-        selected = [candidate for candidate in candidates if candidate.recommended]
-        skipped = [candidate for candidate in candidates if not candidate.recommended]
-        print(
-            "Consent mode: auto — selecting all verified, meaningful-use "
-            f"repositories ({len(selected)})."
-        )
-        if skipped:
-            print(
-                f"Skipped {len(skipped)} low-confidence reference(s); "
-                "use review before starring them explicitly."
-            )
-        return selected
-    raise ConfigError(f"Unsupported consent mode: {mode}")
-
-
-def _execute_stars(selected: list[Candidate], *, dry_run: bool) -> int:
+def _execute_stars(
+    selected: list[Candidate],
+    *,
+    dry_run: bool,
+    client: GitHubClient | None = None,
+    known_unstarred: bool = False,
+) -> int:
     if not selected:
         print("No repositories selected.")
         return 0
@@ -381,12 +357,12 @@ def _execute_stars(selected: list[Candidate], *, dry_run: bool) -> int:
             print(f"Would star: https://github.com/{candidate.repository}")
         return 0
 
-    client = GitHubClient()
-    print(f"GitHub account: @{client.whoami()}")
+    if client is None:
+        raise InteractionError("An authenticated interactive Star session is required.")
     newly_starred: list[str] = []
     try:
         for index, candidate in enumerate(selected):
-            if client.is_starred(candidate.repository):
+            if not known_unstarred and client.is_starred(candidate.repository):
                 print(f"Already starred: https://github.com/{candidate.repository}")
             else:
                 client.star(candidate.repository)
@@ -405,26 +381,38 @@ def _execute_stars(selected: list[Candidate], *, dry_run: bool) -> int:
 
 def _unstar(args: argparse.Namespace) -> int:
     repositories = [validate_repository(item) for item in args.repositories]
-    if not args.yes:
-        answer = _read_answer(f"Unstar {len(repositories)} repositories? [y/N] ")
-        if answer not in {"y", "yes"}:
-            print("Cancelled.")
-            return 0
-
     if args.dry_run:
         for repository in repositories:
             print(f"Would unstar: https://github.com/{repository}")
         return 0
 
+    _require_interactive_terminal("Unstarring")
     client = GitHubClient()
     print(f"GitHub account: @{client.whoami()}")
-    for index, repository in enumerate(repositories):
+    selected: list[str] = []
+    for repository in repositories:
+        answer = _read_answer(f"Unstar https://github.com/{repository}? [y/N/q] ")
+        if answer in {"q", "quit", "cancel"}:
+            print("Cancelled.")
+            return 0
+        if answer in {"y", "yes"}:
+            selected.append(repository)
+
+    if not selected:
+        print("No repositories selected.")
+        return 0
+    answer = _read_answer(f"Proceed with {len(selected)} unstar(s)? [y/N] ")
+    if answer not in {"y", "yes"}:
+        print("Cancelled.")
+        return 0
+
+    for index, repository in enumerate(selected):
         if client.is_starred(repository):
             client.unstar(repository)
             print(f"Unstarred: https://github.com/{repository}")
         else:
             print(f"Not starred: https://github.com/{repository}")
-        if index + 1 < len(repositories):
+        if index + 1 < len(selected):
             time.sleep(0.25)
     return 0
 
@@ -468,14 +456,7 @@ def _doctor(args: argparse.Namespace) -> int:
         else:
             print(f"[--] Non-Git project: {root} (current manifests will be scanned)")
 
-    store = ConfigStore()
-    try:
-        settings = store.load()
-        saved = "saved" if store.exists else "safe default, not saved"
-        print(f"[ok] Consent mode: {settings.consent_mode} ({saved})")
-    except ConfigError as error:
-        print(f"[!!] Consent configuration: {error}")
-        issues += 1
+    print("[ok] Star policy: interactive approval required for every repository")
 
     try:
         login = GitHubClient().whoami()
@@ -516,10 +497,15 @@ def _read_answer(prompt: str) -> str:
     try:
         return input(prompt).strip().casefold()
     except EOFError as error:
-        raise ConfigError(
-            "Interactive confirmation requires a terminal. Use '--mode auto', "
-            "'--yes', or configure auto mode explicitly."
-        ) from error
+        raise InteractionError("Interactive confirmation ended before a decision.") from error
+
+
+def _require_interactive_terminal(action: str) -> None:
+    if not sys.stdin.isatty():
+        raise InteractionError(
+            f"{action} requires an interactive terminal; piped or unattended "
+            "confirmation is not accepted. Use --dry-run for automation."
+        )
 
 
 def _print_summary(report: Report, report_path: Path) -> None:
@@ -530,7 +516,8 @@ def _print_summary(report: Report, report_path: Path) -> None:
         f"{len(report.unresolved_dependencies)} unresolved dependency mapping(s)."
     )
     print(f"Review: agent-thanks review {report_path}")
-    print(f"Apply saved policy: agent-thanks star {report_path}")
+    print(f"Export: agent-thanks export {report_path} --output OPEN_SOURCE_USE.md")
+    print(f"Approve Stars: agent-thanks star {report_path}")
 
 
 def _print_report(report: Report) -> None:

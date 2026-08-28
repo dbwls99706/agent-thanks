@@ -50,3 +50,5 @@ jobs:
       - run: smoke/bin/python -m pip install --no-index --find-links dist agent-thanks
       - run: smoke/bin/agent-thanks --version
       - run: smoke/bin/agent-thanks demo
+      - run: smoke/bin/agent-thanks scan --repo . --offline --output smoke-report.json
+      - run: smoke/bin/agent-thanks export smoke-report.json --output smoke-report.md

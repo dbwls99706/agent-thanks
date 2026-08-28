@@ -47,7 +47,7 @@
     <text x="28" y="88" fill="#38c7c7" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="22">$ agent-thanks run --dry-run</text>
     <text x="28" y="130" fill="#f4ead7" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="21">✓ Found 3 repositories</text>
     <text x="28" y="169" fill="#f4ead7" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="21">✓ Evidence attached to every match</text>
-    <text x="28" y="208" fill="#ffbd2e" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="21">★ Your choice: ask every time or auto</text>
+    <text x="28" y="208" fill="#ffbd2e" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="21">★ Every Star requires an explicit y/N</text>
   </g>
 
   <g transform="translate(910 300)">

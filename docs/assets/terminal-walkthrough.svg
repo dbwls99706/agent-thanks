@@ -20,11 +20,11 @@
   </g>
   <path d="M0 688c250-96 435-44 646 2 267 59 443-92 754-15v105H0Z" fill="#0d323b" opacity=".72"/>
 
-  <text x="80" y="82" fill="#f5ead8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="24" font-weight="800" letter-spacing="2">ONE RUN · FULL CONTROL</text>
+  <text x="80" y="82" fill="#f5ead8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="24" font-weight="800" letter-spacing="2">ONE REPORT · HUMAN DECISION</text>
   <g transform="translate(1045 48)">
     <rect width="275" height="52" rx="26" fill="#0b333c" stroke="#39c7c8" stroke-width="2"/>
     <circle cx="29" cy="26" r="7" fill="#39c7c8"/>
-    <text x="49" y="34" fill="#b9d5d8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="700">ASK MODE · OPT-IN</text>
+    <text x="49" y="34" fill="#b9d5d8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="700">EACH STAR · y/N</text>
   </g>
 
   <g>
@@ -42,8 +42,8 @@
     <text x="204" y="183" fill="#9db9be" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="19">agent-thanks — ~/project</text>
 
     <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22">
-      <text x="112" y="260" fill="#39c7c8">$ agent-thanks run --mode ask</text>
-      <text x="112" y="304" fill="#f5ead8">✓ Found 3 repositories · 2 verified for meaningful use</text>
+      <text x="112" y="260" fill="#39c7c8">$ agent-thanks star report.json</text>
+      <text x="112" y="304" fill="#f5ead8">GitHub account: @octocat · 2 repositories eligible</text>
 
       <rect x="110" y="333" width="927" height="102" rx="14" fill="#0b2027" stroke="#20505b" stroke-width="2"/>
       <rect x="130" y="354" width="184" height="31" rx="15" fill="#123d41"/>
@@ -55,8 +55,8 @@
       <rect x="544" y="451" width="43" height="39" rx="8" fill="#173c39" stroke="#39c7c8" stroke-width="2"/>
       <text x="557" y="478" fill="#39c7c8" font-weight="800">y</text>
 
-      <text x="112" y="525" fill="#9db9be">GitHub account:</text>
-      <text x="320" y="525" fill="#f5ead8">@octocat</text>
+      <text x="112" y="525" fill="#9db9be">? Proceed with 1 star? [y/N]</text>
+      <text x="472" y="525" fill="#39c7c8" font-weight="800">y</text>
       <text x="112" y="568" fill="#ffbd2e">★ Starred:</text>
       <text x="261" y="568" fill="#f5ead8">github.com/owner/project</text>
       <text x="112" y="611" fill="#39c7c8" font-size="18">↶ Undo this batch: agent-thanks unstar owner/project</text>

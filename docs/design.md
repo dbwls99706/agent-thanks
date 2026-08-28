@@ -2,59 +2,88 @@
 
 ## Product boundary
 
-`agent-thanks` reports repositories that can be observed during one coding task. It
-does not claim to identify repositories contained in a model's training data.
+`agent-thanks` reports repositories observable during one coding task. It does
+not claim to identify repositories in a model's training data or infer invisible
+influences.
 
 The current release recognizes two evidence families:
 
-1. A direct dependency added since a Git base revision.
-2. A GitHub repository present in an explicitly supplied agent transcript.
+1. A direct dependency added since a Git baseline.
+2. A GitHub repository present in an explicitly supplied session log.
 
-A repository reference is recommended automatically only when deterministic
-evidence indicates substantive use. Viewing a page is insufficient.
+Only deterministic, high-confidence evidence of substantive use makes a
+candidate eligible for the interactive Star flow. A plain repository reference
+remains visible for review but is never eligible for mutation.
 
-## Consent model
+## Human confirmation invariant
 
-The user chooses one persistent policy during setup:
+Automated detection and evidence export are supported. Automated starring is
+not.
 
-- `ask` presents every candidate with a default-No yes/no prompt, followed by
-  final batch confirmation.
-- `auto` selects every high-confidence meaningful-use candidate without another
-  prompt. It never selects low-confidence or viewed-only candidates.
+Every live Star mutation must pass all of these gates:
 
-`auto` is an explicit, product-specific user policy. It is not an implementation
-of `ATTRIBUTION.md` v0.1. That draft protocol currently defines only
-`mode: suggest`; when protocol discovery is implemented, those requests must
-remain repository-specific prompts even if the user's general policy is `auto`.
+1. The candidate has high-confidence meaningful-use evidence.
+2. The process has an interactive terminal; piped input is rejected.
+3. The authenticated GitHub account is displayed.
+4. Existing Stars are excluded before prompting, so the same account is not
+   asked about the same repository again.
+5. The user answers `y` for that exact new repository; the default is No.
+6. The user confirms the final selected count.
 
-`run --mode ...` and `star --mode ...` provide one-time overrides without
-changing the stored policy. Non-interactive inclusion of low-confidence
-references requires the deliberately redundant `--all --yes` combination.
+`--repo` narrows the eligible set but cannot raise a candidate's confidence.
+There is no saved consent policy, unattended confirmation flag, or bulk
+low-confidence override. Legacy 0.3.x consent configuration is not read.
 
-Scanning and review remain read-only regardless of the stored mode. `unstar`
-provides a reversal path. Before mutating, the CLI identifies the authenticated
-account and checks whether each repository is already starred. A successful
-batch prints an Undo receipt containing only Stars created by that invocation.
+Unstar follows the same interactive pattern. Before any mutation the client
+checks the current Star state. A successful Star batch prints an Undo receipt
+containing only Stars created by that invocation. If an API or network failure
+occurs after partial progress, the same receipt is printed before a non-zero
+exit.
+
+## Rank-neutral operations
+
+The following operations never mutate GitHub:
+
+- `demo`
+- `scan`
+- `review`
+- `export`
+- any command using `--dry-run`
+
+They can run non-interactively in CI. `doctor` also makes no mutation, but it
+does contact GitHub to identify the active account.
+
+## Export boundary
+
+The JSON report is the complete local audit artifact and can include absolute
+project or session paths. Markdown export is intended for human-reviewed
+sharing. It:
+
+- includes verified-use candidates by default;
+- optionally adds a separate low-confidence reference section;
+- never changes confidence or Star eligibility;
+- removes absolute directory prefixes from evidence-source labels;
+- performs no network or authentication work.
 
 ## Trust boundaries
 
-- Session logs stay local and are never sent to an AI service.
-- Package names may be sent to their public registry unless `--offline` is used.
-- GitHub-hosted Go module paths and Git submodule URLs resolve locally without a
-  registry lookup.
-- Credentials are read from `GH_TOKEN`, `GITHUB_TOKEN`, or an authenticated
-  GitHub CLI session and are never persisted by `agent-thanks`.
-- The consent policy contains no credential and is saved atomically with owner-
-  only permissions on POSIX systems.
-- Report files can reveal local paths and package names and should not be
+- Session-log contents stay local and are never sent to a model or registry.
+- Package names may be sent to PyPI, npm, or crates.io unless `--offline` is
+  used.
+- GitHub-hosted Go paths, Git submodule URLs, and direct Git URLs resolve
+  locally.
+- GitHub account lookup, existing-Star lookup, Star, and Unstar use the GitHub
+  API or an authenticated GitHub CLI session.
+- Credentials are read from `GH_TOKEN`, `GITHUB_TOKEN`, or GitHub CLI and are
+  never persisted by `agent-thanks`.
+- Raw reports can expose local paths and package names and should not be
   committed blindly.
-- `doctor`, `scan`, `review`, and `--dry-run` never perform a Star mutation.
 
 ## Detection roadmap
 
 - Agent adapters that emit a small, stable provenance event format.
 - Added imports and lockfile-aware direct/transitive classification.
-- `ATTRIBUTION.md` discovery and validation, with v0.1 `mode: suggest` always
-  routed through repository-specific confirmation.
-- Mirrors, monorepos, and registry metadata confidence.
+- `ATTRIBUTION.md` discovery and validation, with `mode: suggest` always routed
+  through repository-specific confirmation.
+- Mirrors, monorepos, and registry-metadata confidence.
 - A local audit ledger with reversible action history.
