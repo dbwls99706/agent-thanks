@@ -46,6 +46,19 @@ python -m pip install "agent-thanks @ git+https://github.com/dbwls99706/agent-th
 
 Python 3.10 through 3.14 is supported on Linux, macOS, and Windows.
 
+## Try it without a GitHub account
+
+Preview the complete evidence and dry-run experience before configuring
+anything:
+
+```bash
+agent-thanks demo
+```
+
+The demo performs no network requests, reads no credentials, writes no report,
+and never changes a Star. It deliberately includes one low-confidence reference
+so the review boundary is visible in the output.
+
 ## Start in 60 seconds
 
 Authenticate once with the GitHub CLI, or provide a fine-grained user token:
@@ -133,6 +146,18 @@ High-confidence transcript evidence includes:
 - `git submodule add`
 - Git-based `pip`, `uv`, npm, pnpm, Yarn, Cargo, and Go commands
 - Explicit `copied from`, `adapted from`, or `used code from` provenance
+
+## Why task-level evidence?
+
+Tools such as [thanks-stars](https://github.com/kenzo-pj/thanks-stars) thank the
+repositories behind a project's dependency tree. `agent-thanks` answers a
+narrower question: **which repositories were observably used during this agent
+task?**
+
+It compares the current work with a Git baseline, accepts explicit session
+evidence, explains every match, and separates meaningful use from a URL that was
+only viewed. This makes it suitable when the user wants reviewable attribution
+instead of starring every dependency already present in the project.
 
 Repository starring itself is language-independent. Any valid public GitHub
 `owner/repository` detected in the report can be reviewed and starred.
@@ -229,13 +254,18 @@ empty-report, and dependency-resolution cases.
 - Requests are serialized rather than sent as a high-speed bulk burst.
 
 The tool cannot identify repositories contained in a model's training data. It
-reports only evidence observable in the current task. Its consent and
-meaningful-use rules are compatible with the emerging
-[ATTRIBUTION.md](https://github.com/attributionmd/attribution.md) convention.
+reports only evidence observable in the current task.
+
+`ATTRIBUTION.md` v0.1 discovery is on the roadmap; the current release does not
+parse that file. The draft protocol's `mode: suggest` requires explicit consent
+for each repository. When support lands, protocol requests will always use that
+per-repository prompt even if the user's separate `agent-thanks` policy is
+`auto`.
 
 ## Command overview
 
 ```text
+agent-thanks demo     Preview the flow without credentials or network access
 agent-thanks doctor   Verify project, configuration, and GitHub account
 agent-thanks config   Choose ask or auto
 agent-thanks run      Scan and apply the saved policy

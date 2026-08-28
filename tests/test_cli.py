@@ -284,6 +284,27 @@ class CliTests(unittest.TestCase):
         client_type.assert_not_called()
 
     @patch("agent_thanks.cli.GitHubClient")
+    def test_demo_is_read_only_and_requires_no_authenticated_client(
+        self, client_type
+    ) -> None:
+        output = StringIO()
+
+        with redirect_stdout(output):
+            status = main(["demo"])
+
+        rendered = output.getvalue()
+        self.assertEqual(status, 0)
+        self.assertIn("no credentials or network requests", rendered)
+        self.assertIn(
+            "Would star: https://github.com/BehaviorTree/BehaviorTree.CPP", rendered
+        )
+        self.assertIn("Would star: https://github.com/ros-navigation/navigation2", rendered)
+        self.assertNotIn(
+            "Would star: https://github.com/example/reference-only", rendered
+        )
+        client_type.assert_not_called()
+
+    @patch("agent_thanks.cli.GitHubClient")
     def test_unstar_dry_run_never_constructs_an_authenticated_client(
         self, client_type
     ) -> None:

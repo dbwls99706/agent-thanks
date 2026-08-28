@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.3.1 - 2026-08-28
+
+- Add `agent-thanks demo`, a credential-free and network-free preview of the
+  evidence, review, and dry-run experience.
+- Verify the demo from the built wheel in CI.
+- Clarify the task-level positioning relative to whole-project dependency
+  starring tools.
+- Document that `ATTRIBUTION.md` v0.1 parsing is planned rather than currently
+  implemented, and that its `mode: suggest` requires per-repository consent.
+
 ## 0.3.0 - 2026-08-27
 
 - Prevent renamed or relocated manifests from making existing dependencies look

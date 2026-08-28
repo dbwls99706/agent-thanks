@@ -22,6 +22,11 @@ The user chooses one persistent policy during setup:
 - `auto` selects every high-confidence meaningful-use candidate without another
   prompt. It never selects low-confidence or viewed-only candidates.
 
+`auto` is an explicit, product-specific user policy. It is not an implementation
+of `ATTRIBUTION.md` v0.1. That draft protocol currently defines only
+`mode: suggest`; when protocol discovery is implemented, those requests must
+remain repository-specific prompts even if the user's general policy is `auto`.
+
 `run --mode ...` and `star --mode ...` provide one-time overrides without
 changing the stored policy. Non-interactive inclusion of low-confidence
 references requires the deliberately redundant `--all --yes` combination.
@@ -49,6 +54,7 @@ batch prints an Undo receipt containing only Stars created by that invocation.
 
 - Agent adapters that emit a small, stable provenance event format.
 - Added imports and lockfile-aware direct/transitive classification.
-- `ATTRIBUTION.md` discovery and validation.
+- `ATTRIBUTION.md` discovery and validation, with v0.1 `mode: suggest` always
+  routed through repository-specific confirmation.
 - Mirrors, monorepos, and registry metadata confidence.
 - A local audit ledger with reversible action history.
