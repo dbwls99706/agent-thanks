@@ -11,7 +11,7 @@ from typing import Sequence
 from . import __version__
 from .config import CONSENT_MODES, ConfigError, ConfigStore, Settings
 from .github import GitHubClient, GitHubError, validate_repository
-from .models import Candidate, Report
+from .models import Candidate, Evidence, Report
 from .resolver import PackageRepositoryResolver
 from .scanner import ProjectScanner, ScanError
 
@@ -29,6 +29,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
+
+    commands.add_parser(
+        "demo",
+        help="Preview the evidence and dry-run flow without credentials or network access",
+    )
 
     run = commands.add_parser(
         "run",
@@ -143,6 +148,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "run":
             return _run(args)
+        if args.command == "demo":
+            return _demo()
         if args.command == "scan":
             return _scan(args)
         if args.command == "review":
@@ -168,6 +175,58 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _build_report(args: argparse.Namespace) -> Report:
     resolver = PackageRepositoryResolver(offline=args.offline)
     return ProjectScanner(args.repo, base=args.base, resolver=resolver).scan(args.session)
+
+
+def _demo() -> int:
+    report = Report(
+        root="<built-in demo>",
+        base=None,
+        candidates=[
+            Candidate(
+                "BehaviorTree/BehaviorTree.CPP",
+                [
+                    Evidence(
+                        kind="session_usage",
+                        source="demo-session.log:2",
+                        detail="Session shows a substantive repository-use command",
+                        confidence="high",
+                        meaningful=True,
+                    )
+                ],
+            ),
+            Candidate(
+                "example/reference-only",
+                [
+                    Evidence(
+                        kind="session_reference",
+                        source="demo-session.log:1",
+                        detail="Repository was referenced in the session; verify actual reuse",
+                        confidence="low",
+                        meaningful=False,
+                    )
+                ],
+            ),
+            Candidate(
+                "ros-navigation/navigation2",
+                [
+                    Evidence(
+                        kind="session_usage",
+                        source="demo-session.log:3",
+                        detail="Session shows a substantive repository-use command",
+                        confidence="high",
+                        meaningful=True,
+                    )
+                ],
+            ),
+        ],
+    )
+    print("agent-thanks demo — read-only; no credentials or network requests\n")
+    _print_report(report)
+    print("\nDry-run actions for verified, meaningful-use repositories:")
+    selected = [candidate for candidate in report.candidates if candidate.recommended]
+    status = _execute_stars(selected, dry_run=True)
+    print("\nNext: agent-thanks config, then agent-thanks run --repo . --dry-run")
+    return status
 
 
 def _write_report(report: Report, output_argument: Path) -> Path:

@@ -49,3 +49,4 @@ jobs:
       - run: python -m venv smoke
       - run: smoke/bin/python -m pip install --no-index --find-links dist agent-thanks
       - run: smoke/bin/agent-thanks --version
+      - run: smoke/bin/agent-thanks demo
