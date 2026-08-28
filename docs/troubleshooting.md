@@ -76,17 +76,33 @@ stays unresolved when:
 - the package metadata has no GitHub source URL; or
 - the ecosystem has no registry resolver yet.
 
-Unresolved packages are never guessed and never auto-starred.
+Unresolved packages are never guessed and are never eligible for Star.
 
 ## A repository is shown as low confidence
 
 A plain GitHub URL proves that a repository was mentioned, not that its work was
-meaningfully reused. In `ask` mode it defaults to No. In `auto` mode it is
-skipped.
+meaningfully reused. It remains visible in reports and optional Markdown export,
+but it is not eligible for the Star flow. Passing it through `--repo` returns a
+non-zero error rather than overriding its confidence.
 
 Use an explicit provenance phrase such as `adapted from` only when it truthfully
 describes the task. Do not edit transcripts merely to force a high-confidence
 classification.
+
+## Interactive terminal required
+
+```text
+Starring requires an interactive terminal; piped or unattended confirmation is
+not accepted. Use --dry-run for automation.
+```
+
+Live Star and Unstar commands require terminal input. `yes | agent-thanks star`
+and similar pipelines are rejected. Use `scan`, `review`, `export`, or
+`--dry-run` in scripts and CI, then run `agent-thanks star` separately when a
+person can inspect each repository.
+
+The 0.3.x `config`, `auto`, `--mode`, `--yes`, and `--all --yes` paths no longer
+exist. Old configuration files are ignored and do not need to be removed.
 
 ## The batch stopped partway through
 

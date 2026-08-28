@@ -1,7 +1,15 @@
 # Usage recipes
 
-This page collects repeatable `agent-thanks` workflows. Start with `--dry-run`
-and remove it only after reviewing the evidence.
+Start with `--dry-run`. Run a live `star` command only after reviewing the
+evidence in an interactive terminal.
+
+## Preview without credentials
+
+```bash
+agent-thanks demo
+```
+
+The built-in demo performs no network requests and changes nothing.
 
 ## Verify the environment
 
@@ -9,23 +17,22 @@ and remove it only after reviewing the evidence.
 agent-thanks doctor --repo .
 ```
 
-`doctor` checks Python, Git, the project directory, the saved consent mode, and
-the GitHub login that would own each Star. It performs no Star mutation.
+`doctor` checks Python, Git, the project directory, the per-repository approval
+policy, and the GitHub login that would own a Star. It does not mutate GitHub.
 
 ## Scan uncommitted work
 
-Use the current `HEAD` as the state before the working-tree changes:
+Use the current `HEAD` as the state before working-tree changes:
 
 ```bash
 agent-thanks run \
   --repo . \
   --base HEAD \
-  --session agent-session.log \
+  --session session.log \
   --dry-run
 ```
 
-Both staged and unstaged manifest changes are included. Untracked supported
-manifests are treated as new.
+Staged, unstaged, and untracked supported manifests are included.
 
 ## Scan one committed task
 
@@ -35,23 +42,24 @@ If the task is the most recent commit:
 agent-thanks run \
   --repo . \
   --base HEAD~1 \
-  --session agent-session.log \
+  --session session.log \
   --dry-run
 ```
 
-For a longer range, use the commit immediately before the work as `--base`.
+For a longer range, pass the commit immediately before the task as `--base`.
 
-## Scan dependencies without a transcript
+## Scan dependencies without a session log
 
 ```bash
 agent-thanks scan --repo .
 agent-thanks review .agent-thanks-report.json
 ```
 
-This detects newly introduced direct dependencies in supported manifests. It
-does not guess which repositories were only consulted during the task.
+This reports newly introduced direct dependencies in supported manifests. It
+does not guess which repositories may have been consulted without a recorded
+signal.
 
-## Scan multiple transcript files
+## Scan multiple session logs
 
 ```bash
 agent-thanks scan \
@@ -63,36 +71,55 @@ agent-thanks scan \
 
 Evidence for the same repository is deduplicated into one candidate.
 
-## Read a transcript from standard input
+## Read a session log from standard input
 
 ```bash
-your-agent-log-command | agent-thanks scan --repo . --session -
+your-log-command | agent-thanks scan --repo . --session -
 ```
 
-The generated report stays local. Standard input is not uploaded by the tool.
+Standard input stays local. Use a separate interactive `star` command after
+reviewing the saved report.
 
 ## Work without registry access
 
 ```bash
-agent-thanks run --repo . --session agent-session.log --offline --dry-run
+agent-thanks run --repo . --session session.log --offline --dry-run
 ```
 
-Direct GitHub URLs, Git submodules, and GitHub-hosted Go module paths still map
-offline. Package names that require PyPI, npm, or crates.io metadata remain in
-the unresolved section of the report.
+Direct GitHub URLs, Git submodules, and GitHub-hosted Go modules still resolve.
+Package names requiring PyPI, npm, or crates.io metadata remain unresolved.
 
-## Review first, mutate later
+## Review now, decide later
 
 ```bash
-agent-thanks scan --repo . --session agent-session.log
+agent-thanks scan --repo . --session session.log
 agent-thanks review .agent-thanks-report.json
+agent-thanks export .agent-thanks-report.json --output OPEN_SOURCE_USE.md
 agent-thanks star .agent-thanks-report.json
 ```
 
-This is useful when a report needs review by another person before any account
-mutation.
+The first three commands are rank-neutral. The final command requires a terminal
+and asks separately for each eligible repository.
 
-## Star exact candidates only
+## Export evidence in CI
+
+```bash
+agent-thanks scan \
+  --repo . \
+  --base HEAD~1 \
+  --offline \
+  --output .agent-thanks-report.json
+
+agent-thanks export \
+  .agent-thanks-report.json \
+  --output OPEN_SOURCE_USE.md
+```
+
+Add `--include-low-confidence` only when the review-only reference section is
+useful. Export makes no network request, removes absolute directory prefixes,
+and never changes a Star.
+
+## Approve exact verified candidates
 
 ```bash
 agent-thanks star \
@@ -101,43 +128,31 @@ agent-thanks star \
   --repo owner/second
 ```
 
-Every requested repository must already exist in the report.
+Every requested repository must already be verified in the report. Each receives
+its own default-No prompt followed by a final count confirmation.
 
-## Non-interactive verified-only run
+## Undo a completed Star batch
 
-```bash
-agent-thanks star .agent-thanks-report.json --yes
-```
-
-`--yes` selects only high-confidence, meaningful-use candidates. Low-confidence
-references require the separate and explicit `--all --yes` combination.
-
-## Undo a completed batch
-
-After adding Stars, the CLI prints a command containing only the repositories
-that were newly starred:
+After adding Stars, the CLI prints only the repositories newly changed by that
+invocation:
 
 ```text
 Undo this batch: agent-thanks unstar owner/one owner/two
 ```
 
-Copy that command to restore the prior state. Repositories that were already
-starred are excluded, so the receipt does not remove older Stars.
+Run the command in a terminal. Each Unstar also requires explicit approval.
+Repositories already starred before the batch are excluded from the receipt.
 
-## Use a temporary configuration file
+## Migrate a 0.3.x automation
 
-Linux and macOS:
+Replace any old command that changed Stars non-interactively with evidence-only
+steps:
 
 ```bash
-AGENT_THANKS_CONFIG=/tmp/agent-thanks-config.json agent-thanks config --mode ask
+agent-thanks scan --repo . --output .agent-thanks-report.json
+agent-thanks export .agent-thanks-report.json --output OPEN_SOURCE_USE.md
+agent-thanks star .agent-thanks-report.json --dry-run
 ```
 
-PowerShell:
-
-```powershell
-$env:AGENT_THANKS_CONFIG = "$env:TEMP\agent-thanks-config.json"
-agent-thanks config --mode ask
-```
-
-The configuration stores only the consent mode. It never contains a GitHub
-credential.
+Legacy consent configuration is ignored. Run `agent-thanks star` interactively
+when a person is ready to decide repository by repository.

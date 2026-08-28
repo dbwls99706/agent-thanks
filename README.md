@@ -4,125 +4,112 @@
 [![Python 3.10–3.14](https://img.shields.io/badge/Python-3.10%E2%80%933.14-3776AB.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/dbwls99706/agent-thanks/blob/main/LICENSE)
 
-Give open-source maintainers a visible thank-you when an AI coding agent
+Give open-source maintainers a visible thank-you when a coding agent
 meaningfully uses their work.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/dbwls99706/agent-thanks/main/docs/assets/agent-thanks-banner.svg" alt="AI: done in 12 seconds. Open source: 12 years in the making. Leave a star." width="900">
 </p>
 
-`agent-thanks` turns one coding task into a reviewable gratitude loop:
+`agent-thanks` reconstructs the open-source footprint of one coding task:
 
-1. Detect GitHub repositories used during the task.
-2. Show exactly why each repository was detected.
-3. Ask for consent or apply the user's saved auto policy.
+1. Detect repositories from newly added dependencies and an optional session log.
+2. Show the evidence behind every match.
+3. Export a shareable Markdown record or approve eligible Stars one by one.
 
-It is agent-agnostic, uses deterministic rules, and does not call another AI
-model. Search results and briefly viewed repositories are never auto-starred.
+Detection uses deterministic rules and never calls another model. A plain URL is
+treated as a reference, not proof of use. Every live Star requires an explicit
+`y/N` decision in an interactive terminal—there is no unattended or bulk-Star
+mode.
 
-> The project is intentionally conservative. Start in `ask` mode and use
-> `--dry-run` until the report matches your expectations.
+## Try it first
 
-## Install
-
-For an isolated command-line installation, use
-[pipx](https://pipx.pypa.io/stable/):
+Install the CLI and run its built-in, read-only demo:
 
 ```bash
 pipx install git+https://github.com/dbwls99706/agent-thanks.git
-```
-
-With [uv](https://docs.astral.sh/uv/):
-
-```bash
-uv tool install git+https://github.com/dbwls99706/agent-thanks.git
-```
-
-Plain pip also works:
-
-```bash
-python -m pip install "agent-thanks @ git+https://github.com/dbwls99706/agent-thanks.git"
-```
-
-Python 3.10 through 3.14 is supported on Linux, macOS, and Windows.
-
-## Try it without a GitHub account
-
-Preview the complete evidence and dry-run experience before configuring
-anything:
-
-```bash
 agent-thanks demo
 ```
 
-The demo performs no network requests, reads no credentials, writes no report,
-and never changes a Star. It deliberately includes one low-confidence reference
-so the review boundary is visible in the output.
+The install requires network access. The demo itself makes no network requests,
+reads no credentials, writes no files, and changes no Stars. It includes both
+verified use and a low-confidence reference so the boundary is visible.
 
 ## Start in 60 seconds
 
-Authenticate once with the GitHub CLI, or provide a fine-grained user token:
+Preview one task without authenticating to GitHub:
+
+```bash
+agent-thanks run \
+  --repo . \
+  --base HEAD \
+  --session path/to/agent-session.log \
+  --dry-run
+```
+
+This writes `.agent-thanks-report.json`, explains every candidate, and prints
+which verified repositories would be offered for approval. Review or export the
+same report at any time:
+
+```bash
+agent-thanks review .agent-thanks-report.json
+agent-thanks export .agent-thanks-report.json --output OPEN_SOURCE_USE.md
+```
+
+When the evidence looks right, authenticate and start the interactive flow:
 
 ```bash
 gh auth login
-```
-
-Choose the consent policy, verify the setup, and preview the first run:
-
-```bash
-agent-thanks config
 agent-thanks doctor --repo .
-agent-thanks run --repo . --session path/to/agent-session.log --dry-run
+agent-thanks star .agent-thanks-report.json
 ```
 
-Remove `--dry-run` when the evidence looks right:
-
-```bash
-agent-thanks run --repo . --session path/to/agent-session.log
-```
-
-Typical output:
+Typical interaction:
 
 ```text
+Review only: 1 candidate(s) lack high-confidence meaningful-use evidence and cannot be starred.
 GitHub account: @octocat
+Each new Star requires an explicit yes. The default is No.
+
+[verified | high] https://github.com/BehaviorTree/BehaviorTree.CPP
+  - Session shows a substantive repository-use command (session.log:8)
+Star this repository? [y/N/q] y
+
+Proceed with 1 star(s)? [y/N] y
 Starred: https://github.com/BehaviorTree/BehaviorTree.CPP
-Already starred: https://github.com/ros-navigation/navigation2
 Undo this batch: agent-thanks unstar BehaviorTree/BehaviorTree.CPP
 ```
 
-The account is shown before any mutation. Existing Stars remain untouched, and
-the Undo receipt contains only Stars created by that invocation.
+The authenticated account is shown before any decision. Existing Stars are
+checked and reported without another mutation. Every repository that needs a
+new Star requires its own `y`; there is no approve-all choice. The Undo receipt
+contains only Stars created by that invocation.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/dbwls99706/agent-thanks/main/docs/assets/terminal-walkthrough.svg" alt="Terminal walkthrough: detect repositories, review evidence, approve a Star, verify the GitHub account, and receive an Undo command." width="900">
 </p>
 
-<p align="center"><sub>Detect → review → approve → thank. The illustration follows the real CLI order.</sub></p>
+<p align="center"><sub>Detect → inspect → approve → thank. The illustration follows the real CLI flow.</sub></p>
 
-## Consent modes
+## The safety boundary
 
-| Mode | Behaviour |
-| --- | --- |
-| `ask` | Show every candidate and wait for an explicit `yes` or `no`. This is the safe default. |
-| `auto` | Star every candidate with high-confidence evidence of meaningful use. |
+| Result | Meaning | Star behavior |
+| --- | --- | --- |
+| Verified use | High-confidence evidence of a newly added dependency, clone, Git install, submodule, or explicit provenance | Eligible for a default-No `y/N` prompt |
+| Reference to review | A GitHub URL appeared, but meaningful use is not established | Visible in reports; never eligible for Star |
+| Unresolved dependency | A package could not be mapped to a GitHub source | Reported without guessing or mutation |
 
-Configure the saved mode at any time:
+The CLI enforces this boundary in code:
 
-```bash
-agent-thanks config --mode ask
-agent-thanks config --mode auto
-agent-thanks config --show
-```
+- A live Star requires a real interactive terminal.
+- Piped and unattended confirmations are rejected.
+- Every eligible repository gets its own default-No prompt and a final summary.
+- `--repo` can narrow the eligible set but cannot elevate a low-confidence item.
+- `demo`, `scan`, `review`, `export`, and every `--dry-run` are rank-neutral.
+- Star and Unstar failures return non-zero and never print false success.
 
-Override it for one invocation without changing the saved choice:
-
-```bash
-agent-thanks run --mode ask --dry-run
-agent-thanks run --mode auto --dry-run
-```
-
-Low-confidence references stay unstarred in `auto` mode. Including them requires
-the explicit bulk command `agent-thanks star --all --yes`.
+Automation is intentionally limited to detection and evidence export. This keeps
+CI workflows useful without turning a human signal into an unattended action.
 
 ## What gets detected
 
@@ -131,148 +118,194 @@ the explicit bulk command `agent-thanks star --all --yes`.
 | `requirements*.txt`, `pyproject.toml` | Python direct dependencies | High |
 | `package.json` | npm direct dependencies | High |
 | `Cargo.toml` | Rust direct dependencies | High |
-| `go.mod` | Direct Go modules; GitHub paths map without a registry lookup | High |
+| `go.mod` | Direct Go modules; GitHub paths map locally | High |
 | `.gitmodules` | GitHub submodules | High |
-| Agent transcript | Clone, submodule, Git install, or explicit code-provenance lines | High |
-| Plain GitHub URL in a transcript | Any public GitHub repository | Low; manual review |
+| Session log | Clone, submodule, Git install, or explicit code-provenance lines | High |
+| Plain GitHub URL in a session log | Any public GitHub repository | Low; review only |
 
-Package names from PyPI, npm, and crates.io are mapped using public registry
-metadata. Use `--offline` to disable these lookups. Go modules and Git submodules
-whose source is already a GitHub URL need no registry request.
-
-High-confidence transcript evidence includes:
+High-confidence session evidence includes:
 
 - `git clone` and `gh repo clone`
 - `git submodule add`
 - Git-based `pip`, `uv`, npm, pnpm, Yarn, Cargo, and Go commands
 - Explicit `copied from`, `adapted from`, or `used code from` provenance
 
+Package names from PyPI, npm, and crates.io are mapped through public registry
+metadata. `--offline` disables those lookups. GitHub-hosted Go modules, Git
+submodules, and direct Git URLs can resolve locally.
+
+Repository starring is language-independent: any valid public GitHub
+`owner/repository` can appear in a report when supported evidence identifies it.
+The dependency-diff scanners currently cover Python, npm, Cargo, and Go; session
+evidence covers public GitHub repositories from any ecosystem.
+
 ## Why task-level evidence?
 
-Tools such as [thanks-stars](https://github.com/kenzo-pj/thanks-stars) thank the
-repositories behind a project's dependency tree. `agent-thanks` answers a
-narrower question: **which repositories were observably used during this agent
+Dependency-tree tools answer “what does this project depend on?” `agent-thanks`
+asks a narrower question: **what was newly and observably used during this one
 task?**
 
-It compares the current work with a Git baseline, accepts explicit session
-evidence, explains every match, and separates meaningful use from a URL that was
-only viewed. This makes it suitable when the user wants reviewable attribution
-instead of starring every dependency already present in the project.
-
-Repository starring itself is language-independent. Any valid public GitHub
-`owner/repository` detected in the report can be reviewed and starred.
+It compares the current work with a Git baseline, accepts an explicitly supplied
+session log, explains every match, and separates meaningful use from a URL that
+was merely present. It does not claim to identify model-training sources or
+unobservable influences.
 
 ## Common workflows
 
-### Uncommitted agent changes
+### Uncommitted work
 
-`HEAD` represents the project before the current working-tree changes:
+Use `HEAD` as the project state before current working-tree changes:
 
 ```bash
-agent-thanks run --repo . --base HEAD --session agent-session.log --dry-run
+agent-thanks run --repo . --base HEAD --session session.log --dry-run
 ```
 
 ### Work already committed
 
-Point `--base` to the revision before the agent's work:
+Point `--base` to the revision immediately before the task:
 
 ```bash
-agent-thanks run --repo . --base HEAD~1 --session agent-session.log --dry-run
+agent-thanks run --repo . --base HEAD~1 --session session.log --dry-run
 ```
 
 ### Dependency changes only
 
-The transcript is optional. This scans supported manifests only:
+The session log is optional:
 
 ```bash
-agent-thanks run --repo . --dry-run
+agent-thanks scan --repo . --base HEAD
 ```
 
-### Pipe a transcript without saving it
+### Read a session log from standard input
 
 ```bash
-your-agent-log-command | agent-thanks scan --repo . --session -
+your-log-command | agent-thanks scan --repo . --session -
 ```
 
-More examples are in the [usage recipes](https://github.com/dbwls99706/agent-thanks/blob/main/docs/recipes.md).
+Use `scan` for piped input. A later `star` command must run in an interactive
+terminal.
 
-## Read-only review workflow
-
-Scanning and starring can be separated completely:
+### Work without registry lookups
 
 ```bash
-agent-thanks scan --repo . --session agent-session.log
-agent-thanks review .agent-thanks-report.json
-agent-thanks star .agent-thanks-report.json
+agent-thanks scan --repo . --session session.log --offline
 ```
 
-`scan`, `review`, and every `--dry-run` invocation are read-only and do not even
-construct an authenticated GitHub client.
+Packages that need registry metadata remain in the unresolved section. They are
+never guessed.
 
-To select exact candidates from a report:
+### Approve exact verified candidates
 
 ```bash
-agent-thanks star --repo owner/one --repo owner/two
+agent-thanks star .agent-thanks-report.json \
+  --repo owner/first \
+  --repo owner/second
 ```
 
-To reverse a Star manually:
+Every requested repository must exist in the report and already have
+high-confidence meaningful-use evidence. Each still receives its own prompt.
+
+More examples are in the [usage recipes](docs/recipes.md).
+
+## Markdown evidence export
+
+Export verified use to a file suitable for review before adding it to a PR or
+release note:
 
 ```bash
-agent-thanks unstar owner/repository
+agent-thanks export .agent-thanks-report.json --output OPEN_SOURCE_USE.md
 ```
+
+Include a clearly separated section of low-confidence references when useful:
+
+```bash
+agent-thanks export .agent-thanks-report.json \
+  --include-low-confidence \
+  --output OPEN_SOURCE_USE.md
+```
+
+Export is deterministic, performs no network or account action, and removes
+absolute local directory prefixes from evidence sources. The JSON report remains
+the complete local record and may contain absolute paths.
 
 ## GitHub authentication
 
-The tool uses `GH_TOKEN` first, then `GITHUB_TOKEN`, then an existing GitHub CLI
-login. It never writes a credential.
+The tool reads credentials in this order:
 
-A fine-grained user token needs:
+1. `GH_TOKEN`
+2. `GITHUB_TOKEN`
+3. an authenticated GitHub CLI session
+
+It never stores a token. A fine-grained user token needs:
 
 - `Starring: write`
 - `Metadata: read`
 
-The Star endpoint always acts on the authenticated user. Run `agent-thanks
-doctor` to see that account before doing any work.
+GitHub's Star endpoint acts on the authenticated user. `agent-thanks doctor`
+shows that account before the interactive flow. Missing authentication, expired
+credentials, insufficient permission, unavailable repositories, rate limits,
+and rejected requests return a non-zero exit code.
 
-Missing authentication, expired credentials, insufficient permission, rate
-limits, and rejected requests return a non-zero exit code. A failed request is
-never printed as a successful Star. If a batch stops after partial progress,
-the CLI prints an Undo command for the completed subset.
+Requests are serialized. If a multi-repository operation stops after partial
+progress, the CLI prints an Undo command for the completed subset.
 
-See the [troubleshooting guide](https://github.com/dbwls99706/agent-thanks/blob/main/docs/troubleshooting.md) for common 401, 403, 404,
-empty-report, and dependency-resolution cases.
+See [troubleshooting](docs/troubleshooting.md) for 401, 403, 404, empty-report,
+and dependency-resolution cases.
 
-## Privacy and safety
+## Privacy and network behavior
 
-- Session logs remain on the local machine.
-- Only package names are sent to public package registries.
-- Reports may contain local paths and dependency names; do not commit them
-  blindly.
-- `ask` defaults every candidate to No and requires a final batch approval.
-- `auto` is opt-in and applies only to verified meaningful-use evidence.
-- Existing Stars are detected and excluded from Undo receipts.
-- Requests are serialized rather than sent as a high-speed bulk burst.
+| Operation | Network behavior |
+| --- | --- |
+| `demo` | None |
+| Session-log scan | Contents stay local |
+| Package resolution | Sends the package name to PyPI, npm, or crates.io unless `--offline` is used |
+| `review` / `export` | None |
+| `doctor` | Checks the authenticated GitHub account |
+| Live Star / Unstar | Checks account and existing-Star state, then uses the GitHub API for approved mutations |
 
-The tool cannot identify repositories contained in a model's training data. It
-reports only evidence observable in the current task.
+Reports can contain project paths, session-log paths, and dependency names. The
+default report name is ignored by this repository, but users should avoid
+committing raw reports without review. Markdown export strips absolute directory
+prefixes but should still be reviewed before publication.
 
-`ATTRIBUTION.md` v0.1 discovery is on the roadmap; the current release does not
-parse that file. The draft protocol's `mode: suggest` requires explicit consent
-for each repository. When support lands, protocol requests will always use that
-per-repository prompt even if the user's separate `agent-thanks` policy is
-`auto`.
+## `ATTRIBUTION.md`
+
+Discovery of the draft `ATTRIBUTION.md` v0.1 protocol is on the roadmap; v0.4.0
+does not parse that file. Its `mode: suggest` consent boundary already matches
+this release's behavior: every live Star is presented as a repository-specific
+human decision.
+
+## Migrating from 0.3.x
+
+v0.4.0 removes persistent consent modes and every non-interactive Star path:
+
+- `agent-thanks config` was removed.
+- `auto` and `--mode` were removed.
+- `star --yes` and `star --all --yes` were removed.
+- Low-confidence references can no longer be starred through this CLI.
+
+Existing 0.3.x configuration files are ignored; no cleanup is required. Replace
+automation that previously changed Stars with rank-neutral commands such as:
+
+```bash
+agent-thanks scan --repo . --output .agent-thanks-report.json
+agent-thanks export .agent-thanks-report.json --output OPEN_SOURCE_USE.md
+agent-thanks star .agent-thanks-report.json --dry-run
+```
+
+Run `agent-thanks star` later in a terminal for per-repository approval.
 
 ## Command overview
 
 ```text
 agent-thanks demo     Preview the flow without credentials or network access
-agent-thanks doctor   Verify project, configuration, and GitHub account
-agent-thanks config   Choose ask or auto
-agent-thanks run      Scan and apply the saved policy
-agent-thanks scan     Create a read-only evidence report
-agent-thanks review   Inspect report evidence
-agent-thanks star     Apply a policy to a saved report
-agent-thanks unstar   Revoke exact Stars
+agent-thanks doctor   Verify the project and authenticated GitHub account
+agent-thanks run      Scan and enter the interactive approval flow
+agent-thanks scan     Create a read-only JSON evidence report
+agent-thanks review   Inspect report evidence in the terminal
+agent-thanks export   Render a shareable Markdown evidence list
+agent-thanks star     Approve eligible Stars one repository at a time
+agent-thanks unstar   Revoke exact Stars with interactive confirmation
 ```
 
 Run `agent-thanks COMMAND --help` for every option.
@@ -288,14 +321,12 @@ python -m unittest discover -s tests -v
 python -m compileall -q src tests
 ```
 
-CI tests Python 3.10 through 3.14 and runs additional Windows and macOS smoke
-jobs. Product boundaries and trust assumptions are documented in
-[design notes](https://github.com/dbwls99706/agent-thanks/blob/main/docs/design.md).
+CI tests Python 3.10 through 3.14 and runs Windows, macOS, and built-wheel smoke
+jobs. Product boundaries and trust assumptions are documented in the
+[design notes](docs/design.md).
 
-Contributions and bug reports are welcome. See
-[contribution guide](https://github.com/dbwls99706/agent-thanks/blob/main/CONTRIBUTING.md),
-[security policy](https://github.com/dbwls99706/agent-thanks/blob/main/SECURITY.md),
-and [code of conduct](https://github.com/dbwls99706/agent-thanks/blob/main/CODE_OF_CONDUCT.md).
+Contributions and bug reports are welcome. See the [contribution guide](CONTRIBUTING.md),
+[security policy](SECURITY.md), and [code of conduct](CODE_OF_CONDUCT.md).
 
 ## License
 

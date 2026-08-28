@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.4.0 - 2026-08-28
+
+- Require a real interactive terminal and a default-No decision for every live
+  Star; the authenticated GitHub account is shown before approval.
+- Check existing Stars before prompting, so one account is not asked to approve
+  the same repository again.
+- Remove persistent `ask`/`auto` configuration and all unattended Star paths,
+  including `--mode`, `--yes`, and `--all --yes`.
+- Make low-confidence and viewed-only references ineligible for Star even when
+  requested explicitly with `--repo`.
+- Keep detection, JSON reports, review, Markdown export, demo, and dry-run
+  workflows non-interactive and free of Star mutations.
+- Add `agent-thanks export` for deterministic, shareable Markdown evidence with
+  optional review-only references and sanitized absolute source paths.
+- Require interactive confirmation for Unstar operations and preserve exact Undo
+  receipts for new Stars and partial failures.
+- Ignore legacy 0.3.x consent configuration safely and document migration to
+  evidence-only automation.
+- Align README, design notes, recipes, troubleshooting, terminal visuals, CI,
+  and package metadata with the new human-confirmation invariant.
+- Publish wheel and source distributions with SHA-256 checksums in the GitHub
+  Release workflow.
+
 ## 0.3.1 - 2026-08-28
 
 - Add `agent-thanks demo`, a credential-free and network-free preview of the

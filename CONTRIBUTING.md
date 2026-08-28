@@ -20,10 +20,12 @@ signal should include:
 - A positive test showing substantive use.
 - A negative test showing a nearby but non-meaningful reference.
 - A clear evidence message suitable for human review.
-- No hidden network calls or account mutations during `scan` or `review`.
+- No hidden network calls or account mutations during `demo`, `scan`, `review`,
+  or `export`.
 
-New account mutations must require explicit user intent and provide a reversal
-path where the platform supports one.
+New account mutations must preserve the per-repository interactive-confirmation
+invariant and provide a reversal path where the platform supports one. Star
+mutations must never gain an unattended, bulk, or piped-confirmation path.
 
 ## Pull requests
 
