@@ -111,6 +111,41 @@ class MarkdownExporterTests(unittest.TestCase):
         self.assertIn("session.log:9", rendered)
         self.assertNotIn("../", rendered)
 
+    def test_windows_absolute_sources_are_sanitized_on_every_platform(self) -> None:
+        report = Report(
+            root=r"C:\work\project",
+            base="HEAD",
+            candidates=[
+                Candidate(
+                    "owner/verified",
+                    [
+                        Evidence(
+                            "session_usage",
+                            r"C:\work\project\logs\session.log:7",
+                            "Used repository",
+                            "high",
+                            True,
+                        ),
+                        Evidence(
+                            "session_usage",
+                            r"D:\private-name\external.log:8",
+                            "Used external repository",
+                            "high",
+                            True,
+                        ),
+                    ],
+                )
+            ],
+        )
+
+        rendered = render_markdown(report)
+
+        self.assertIn("logs/session.log:7", rendered)
+        self.assertIn("external.log:8", rendered)
+        self.assertNotIn("C:\\", rendered)
+        self.assertNotIn("D:\\", rendered)
+        self.assertNotIn("private-name", rendered)
+
     def test_markdown_control_characters_are_escaped(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             rendered = render_markdown(self.make_report(Path(directory)))

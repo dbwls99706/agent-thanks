@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path, PureWindowsPath
+from pathlib import PurePosixPath, PureWindowsPath
 import re
 from urllib.parse import quote
 
@@ -81,25 +81,31 @@ def _safe_source(source: str, root: str) -> str:
     normalized = raw_path.replace("\\", "/")
 
     try:
-        root_path = Path(root).expanduser().resolve()
-        source_path = Path(raw_path).expanduser()
-        if source_path.is_absolute():
+        root_normalized = root.replace("\\", "/")
+        if _WINDOWS_ABSOLUTE.match(raw_path):
+            source_path = PureWindowsPath(raw_path)
+            root_path = PureWindowsPath(root)
             try:
-                label = source_path.resolve().relative_to(root_path).as_posix()
+                label = source_path.relative_to(root_path).as_posix()
             except ValueError:
                 label = source_path.name
-        elif _WINDOWS_ABSOLUTE.match(raw_path):
-            label = PureWindowsPath(raw_path).name
+        elif PurePosixPath(normalized).is_absolute():
+            source_path = PurePosixPath(normalized)
+            root_path = PurePosixPath(root_normalized)
+            try:
+                label = source_path.relative_to(root_path).as_posix()
+            except ValueError:
+                label = source_path.name
         else:
             if normalized == ".." or normalized.startswith("../"):
-                label = Path(normalized).name
+                label = PurePosixPath(normalized).name
             elif normalized.startswith("./"):
                 label = normalized[2:]
             else:
                 label = normalized
-            label = label or Path(normalized).name
+            label = label or PurePosixPath(normalized).name
     except (OSError, RuntimeError, ValueError):
-        label = Path(normalized).name or "source"
+        label = PurePosixPath(normalized).name or "source"
 
     return f"{label}:{line}" if line else label
 
