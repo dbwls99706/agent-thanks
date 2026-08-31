@@ -2,7 +2,7 @@
 
 [![Tests](https://github.com/dbwls99706/agent-thanks/actions/workflows/tests.yml/badge.svg)](https://github.com/dbwls99706/agent-thanks/actions/workflows/tests.yml)
 [![Python 3.10–3.14](https://img.shields.io/badge/Python-3.10%E2%80%933.14-3776AB.svg)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/dbwls99706/agent-thanks/blob/main/LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/dbwls99706/agent-thanks/blob/main/LICENSE)\n<a href="https://smollaunch.com" target="_blank" rel="noopener"><img src="https://smollaunch.com/badges/featured.svg" alt="agent-thanks - Featured on Smol Launch" loading="lazy" width="250" height="60"></a>
 
 Give open-source maintainers a visible thank-you when a coding agent
 meaningfully uses their work.
@@ -19,7 +19,7 @@ meaningfully uses their work.
 
 Detection uses deterministic rules and never calls another model. A plain URL is
 treated as a reference, not proof of use. Every live Star requires an explicit
-`y/N` decision in an interactive terminal—there is no unattended or bulk-Star
+`y/N` decision in an interactive terminal; there is no unattended or bulk-Star
 mode.
 
 ## Try it first
