@@ -86,8 +86,10 @@ but it is not eligible for the Star flow. Passing it through `--repo` returns a
 non-zero error rather than overriding its confidence.
 
 Use an explicit provenance phrase such as `adapted from` only when it truthfully
-describes the task. Do not edit transcripts merely to force a high-confidence
-classification.
+describes the task. The phrase must start its line and point directly at the
+repository, as in `Adapted from https://github.com/owner/repository`; a phrase
+buried inside a longer sentence stays a review-only reference. Do not edit
+transcripts merely to force a high-confidence classification.
 
 ## Interactive terminal required
 

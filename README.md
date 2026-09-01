@@ -136,7 +136,8 @@ High-confidence session evidence includes:
 - `git clone` and `gh repo clone`
 - `git submodule add`
 - Git-based `pip`, `uv`, npm, pnpm, Yarn, Cargo, and Go commands
-- Explicit `copied from`, `adapted from`, or `used code from` provenance
+- Provenance lines that start with `copied from`, `adapted from`, or
+  `used code from` and name the repository as their direct target
 
 Package names from PyPI, npm, and crates.io are mapped through public registry
 metadata. `--offline` disables those lookups. GitHub-hosted Go modules, Git
