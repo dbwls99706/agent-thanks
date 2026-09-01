@@ -3,7 +3,14 @@
 [![Tests](https://github.com/dbwls99706/agent-thanks/actions/workflows/tests.yml/badge.svg)](https://github.com/dbwls99706/agent-thanks/actions/workflows/tests.yml)
 [![Python 3.10–3.14](https://img.shields.io/badge/Python-3.10%E2%80%933.14-3776AB.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/dbwls99706/agent-thanks/blob/main/LICENSE)
-<a href="https://smollaunch.com" target="_blank" rel="noopener"><img src="https://smollaunch.com/badges/featured.svg" alt="agent-thanks - Featured on Smol Launch" loading="lazy" width="250" height="60"></a>
+<a href="https://smollaunch.com" target="_blank" rel="noopener">
+  <img
+    src="https://smollaunch.com/badges/featured.svg"
+    alt="agent-thanks - Featured on Smol Launch"
+    loading="lazy"
+    width="150"
+  >
+</a>
 
 Give open-source maintainers a visible thank-you when a coding agent
 meaningfully uses their work.

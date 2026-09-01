@@ -6,8 +6,8 @@ from typing import Iterable
 
 from .manifests import Dependency, is_supported_manifest, parse_manifest
 from .models import Evidence, Report, UnresolvedDependency, merge_candidates
-from .repositories import extract_github_repositories
 from .resolver import PackageRepositoryResolver
+from .session import scan_session_evidence
 
 
 _IGNORED_PARTS = {
@@ -20,21 +20,6 @@ _IGNORED_PARTS = {
     "dist",
     "build",
 }
-_MEANINGFUL_SESSION_MARKERS = (
-    "git clone",
-    "gh repo clone",
-    "git submodule add",
-    "pip install git+",
-    "uv add git+",
-    "cargo add --git",
-    "go get github.com/",
-    "npm install github:",
-    "pnpm add github:",
-    "yarn add github:",
-    "copied from",
-    "adapted from",
-    "used code from",
-)
 
 
 class ScanError(RuntimeError):
@@ -228,28 +213,4 @@ class ProjectScanner:
 
     @staticmethod
     def _scan_session(text: str, source: str) -> list[tuple[str, Evidence]]:
-        items: list[tuple[str, Evidence]] = []
-        for line_number, line in enumerate(text.splitlines(), start=1):
-            repositories = extract_github_repositories(line)
-            if not repositories:
-                continue
-            lowered = line.casefold()
-            meaningful = any(marker in lowered for marker in _MEANINGFUL_SESSION_MARKERS)
-            for repository in repositories:
-                items.append(
-                    (
-                        repository,
-                        Evidence(
-                            kind="session_usage" if meaningful else "session_reference",
-                            source=f"{source}:{line_number}",
-                            detail=(
-                                "Session shows a substantive repository-use command"
-                                if meaningful
-                                else "Repository was referenced in the session; verify actual reuse"
-                            ),
-                            confidence="high" if meaningful else "low",
-                            meaningful=meaningful,
-                        ),
-                    )
-                )
-        return items
+        return scan_session_evidence(text, source)

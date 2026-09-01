@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- Match high-confidence session evidence to the exact repository targeted by a
+  supported command or provenance phrase, leaving nearby URLs as review-only
+  references.
+- Parse shell options, non-mutating flags, command reachability, comments,
+  document examples, heredocs, and line continuations conservatively so
+  ambiguous session text fails closed.
+- Recognize repository operands in `gh repo clone` and package-manager GitHub
+  shorthand without weakening the per-repository evidence boundary.
+- Require direct, valid GitHub targets in commands and package metadata instead
+  of promoting GitHub text embedded inside unrelated or malformed URLs.
+
 ## 0.4.0 - 2026-08-28
 
 - Require a real interactive terminal and a default-No decision for every live
