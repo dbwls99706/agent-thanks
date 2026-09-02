@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.4.1 - 2026-09-02
+
 - Match high-confidence session evidence to the exact repository targeted by a
   supported command or provenance phrase, leaving nearby URLs as review-only
   references.
