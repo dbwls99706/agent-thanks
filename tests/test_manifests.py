@@ -140,6 +140,21 @@ rich = { git = "https://github.com/Textualize/rich.git" }
         self.assertFalse(by_name["helper"].from_registry)
         self.assertTrue(by_name["rich"].from_registry)
 
+    def test_pip_option_lines_are_ignored(self) -> None:
+        dependencies = parse_manifest(
+            "requirements.txt",
+            "--index-url https://pypi.example.com/simple\n"
+            "--extra-index-url https://github.com/acme/index/simple\n"
+            "-i https://mirror.example.com/simple\n"
+            "-f https://github.com/acme/wheels/releases\n"
+            "--find-links=https://example.com/links\n"
+            "--trusted-host mirror.example.com\n"
+            "-r other.txt\n"
+            "-c constraints.txt\n"
+            "requests>=2\n",
+        )
+        self.assertEqual([item.name for item in dependencies], ["requests"])
+
     def test_local_path_requirements_are_not_github_shorthand(self) -> None:
         for line in ("vendor/pkg", "vendor/pkg[extra]", "./vendor/pkg", "../shared", "/opt/pkg", "~/pkg"):
             with self.subTest(line=line):

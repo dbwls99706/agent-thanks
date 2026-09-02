@@ -132,11 +132,13 @@ def _url_label(value: str) -> str:
 
 def _parse_requirement(value: str) -> Dependency | None:
     value = value.strip()
-    if not value or value.startswith(("#", "-r", "--requirement", "-c", "--constraint")):
+    if not value or value.startswith("#"):
         return None
     editable = _EDITABLE_OPTION.fullmatch(value)
     if editable is not None:
         value = editable.group(1).strip()
+    elif value.startswith("-"):
+        return None
     value = value.split(" ;", 1)[0].strip()
     if not _is_pinned_source(value):
         if editable is not None or _looks_like_local_path(value):
