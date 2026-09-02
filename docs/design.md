@@ -6,11 +6,26 @@
 not claim to identify repositories in a model's training data or infer invisible
 influences.
 
-The current release recognizes two evidence families:
+The current release recognizes two evidence families and keeps them apart:
 
-1. A direct dependency added, or repinned to a different repository source,
-   since a Git baseline.
-2. A GitHub repository present in an explicitly supplied session log.
+1. A direct dependency declared, or repinned to a different repository source,
+   since a Git baseline. This says the project now declares the dependency; it
+   does not say an install succeeded.
+2. A repository command whose successful completion is recorded in an agent
+   transcript or hook log, or an explicit provenance statement. A plain-text
+   command log records no results, so its commands stay references unless the
+   user attests their success with `--trust-session`.
+
+One rule governs every command: if the success of the repository command
+itself cannot be directly confirmed, it is never verified use. A recorded
+success belongs to a command only when the statement is a single command, or a
+chain joined solely by `&&` whose every segment is a repository command or a
+trivially safe command (`cd`, `pushd`, `popd`, `mkdir`, `export`, `set`,
+`true`, `echo`, `printf`, `pwd`, or a variable assignment). Statements using
+`;`, `||`, `|`, or `&`, chains containing any other command (`exit`, `eval`,
+`source`, `builtin`, `make`, an unknown executable), and tool invocations that
+span several logical lines can exit successfully while the repository command
+failed or never ran, so they stay references.
 
 Only deterministic, high-confidence evidence of substantive use makes a
 candidate eligible for the interactive Star flow. A plain repository reference
@@ -53,6 +68,54 @@ The following operations never mutate GitHub:
 
 They can run non-interactively in CI. `doctor` also makes no mutation, but it
 does contact GitHub to identify the active account.
+
+`agent-thanks hook record` and `agent-thanks hook stop` are the same kind of
+operation. They exist so coding agents can trigger detection after a turn
+without interrupting the agent: `record` appends executed shell commands to
+`.agent-thanks/sessions/<session>.jsonl`, and `stop` scans the project, writes
+`.agent-thanks/reports/<session>.json` plus a latest copy at
+`.agent-thanks/report.json`, and prints a one-line notice the first time a
+repository shows verified use in that session. Hooks never authenticate, never
+contact GitHub, and always exit successfully, so a failure inside a hook cannot
+block the agent or approve anything. Approval remains the interactive `star`
+command.
+
+`record` writes a structured entry per command with a `status` and a `basis`.
+An explicit result in the `tool_response` decides the status. Without one, the
+status is `unknown` unless the hook was started with `--from claude-code`: the
+Claude Code post-tool event fires only after a successful run, so that contract
+records `ok` with basis `successful_post_tool_event`. The contract is never
+inferred from the payload, because hook payloads from different agents share
+the same field names and the Codex post-tool event also fires for failed
+commands. `stop` reads the hook log as the primary evidence for actions and
+merges the transcript as secondary evidence for prose provenance and
+result-paired calls; only `ok` entries and recorded successes are promoted.
+
+Agent transcripts are read with a narrower rule than shell logs. Every
+recorded tool result is judged as `ok`, `error`, or `unknown` with failure
+first: any explicit failure signal (`is_error` true, a non-zero exit code, a
+non-empty `error`, a failure status, or an "Exit code: N" line with N != 0)
+makes the result `error` even when a success signal is also present; without a
+failure signal only an exact success signal (`is_error` equal to `false`, exit
+code 0, a success status, or "Exit code: 0") makes it `ok`; everything else,
+including a result with no signal at all, is `unknown`. The same judge applies
+to every format, with no shortcut for any of them. A command counts like a
+shell-log line only when the tool name is on the exact allowlist of known
+shell tools, the call's result is `ok`, the invocation is a single logical line,
+and the statement is pure. Failed, unknown, and missing results, transcripts
+that record no results at all, multi-line invocations, and calls to any other
+tool contribute references only; the evidence detail names the reason. In the
+agent's prose only a line-initial provenance statement counts as use. Tool
+output, user prompts, and hidden reasoning are never treated as actions.
+
+Transcript lookups for `--from` return a file only when the project directory
+it records equals the current directory after normalization, and, when the
+hook payload names a session or thread, only when that identifier matches as
+well; otherwise they fail and ask for an explicit `--session`. Hook state is
+scoped to the agent session: each session gets its own command log, its own
+report, and its own announcement history, so a repository used again in a
+later session is announced again and an announcement always points at the
+report it describes.
 
 ## Export boundary
 

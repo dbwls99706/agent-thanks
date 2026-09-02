@@ -88,11 +88,32 @@ meaningfully reused. It remains visible in reports and optional Markdown export,
 but it is not eligible for the Star flow. Passing it through `--repo` returns a
 non-zero error rather than overriding its confidence.
 
+A command from a plain-text log stays low because the log records no result;
+add `--trust-session` only when you can vouch that the commands succeeded. A
+command from a transcript stays low when its recorded result failed, cannot be
+judged, or is missing, and when the statement combines commands with `;`,
+`||`, `|`, or `&`, because a successful exit then does not belong to the
+repository command. The evidence detail names which case applied.
+
 Use an explicit provenance phrase such as `adapted from` only when it truthfully
 describes the task. The phrase must start its line and point directly at the
 repository, as in `Adapted from https://github.com/owner/repository`; a phrase
 buried inside a longer sentence stays a review-only reference. Do not edit
 transcripts merely to force a high-confidence classification.
+
+## The agent hook announced nothing
+
+`agent-thanks hook stop` prints a notice only when a repository shows verified
+use for the first time in that agent session; later turns of the same session
+stay silent. Check `.agent-thanks/reports/<session>.json` (or the latest copy
+at `.agent-thanks/report.json`) for the full result, including references and
+unresolved dependencies. The hook also stays silent when the turn ran no shell
+commands, when every clone or install in the turn failed or left no judgeable
+result, when the transcript path is missing and `--from` cannot find a
+transcript whose recorded directory and session match, or when `agent-thanks`
+is not on `PATH` for the agent's shell. Only
+known shell tools count as commands; other tools contribute references. Hook
+errors go to standard error and never block the agent.
 
 ## Interactive terminal required
 

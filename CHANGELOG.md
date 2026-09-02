@@ -4,6 +4,39 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Count a session command as verified use only when its own successful
+  completion is recorded: the recorded result must carry an exact success
+  signal and no failure signal, the tool call must be a single logical line,
+  and the statement must be a single command or an `&&` chain whose other
+  segments are trivially safe (`cd`, `mkdir`, `export`, and similar). Failed,
+  conflicting, unjudgeable, and missing results, transcripts without results,
+  multi-line invocations, and compound statements such as
+  `git clone URL || true` or `eval 'exit 0' && git clone URL` stay references,
+  and the evidence names the reason.
+- Treat plain-text session logs as review-only by default, because they record
+  no results; `--trust-session` attests that their commands succeeded.
+- Read coding-agent transcripts (JSON and JSON Lines) with `--session`,
+  pairing each shell-tool call with its recorded result. Only known shell
+  tools count; other tools contribute references. In agent prose only
+  line-initial provenance statements count as use. Tool output, user prompts,
+  and hidden reasoning are never actions.
+- Replace the bundled plain-text example with `examples/session.jsonl`, a
+  transcript whose classification matches `agent-thanks demo`.
+- Add `--from claude-code|codex|gemini` to `scan`, `run`, and `hook stop` to
+  locate the transcript whose recorded project directory equals the current
+  one and whose session identifier matches the hook payload, honoring
+  `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, and to fail rather than guess.
+- Add `agent-thanks hook record` and `agent-thanks hook stop`, detection-only
+  entry points for agent hooks. `record` keeps a structured per-session log
+  with each command's recorded status and basis, treating the Claude Code
+  success-only post-tool event as a success basis only when started with
+  `--from claude-code`; `stop` uses that log as the primary action evidence,
+  merges the transcript as secondary evidence, promotes successful entries
+  only, writes per-session reports, and announces newly verified repositories
+  once per session, without ever changing a Star.
+- Bundle a Claude Code plugin marketplace with hooks and a `/thanks` command.
+- Document pip and release-wheel installation for environments without `pipx`.
+
 ## 0.4.2 - 2026-09-02
 
 - Restore repository detection for editable VCS requirements such as

@@ -14,14 +14,17 @@ meaningfully uses their work.
 
 `agent-thanks` reconstructs the open-source footprint of one coding task:
 
-1. Detect repositories from newly added dependencies and an optional session log.
+1. Detect repositories from newly declared dependencies and from the commands a
+   coding agent ran, read from its transcript or hook log.
 2. Show the evidence behind every match.
 3. Export a shareable Markdown record or approve eligible Stars one by one.
 
 Detection uses deterministic rules and never calls another model. A plain URL is
-treated as a reference, not proof of use. Every live Star requires an explicit
-`y/N` decision in an interactive terminal; there is no unattended or bulk-Star
-mode.
+treated as a reference, not proof of use, and a command counts as use only when
+its successful completion is recorded. "Verified use" means exactly that: a use
+whose success was directly confirmed, never an inference about influence. Every
+live Star requires an explicit `y/N` decision in an interactive terminal; there
+is no unattended or bulk-Star mode.
 
 ## Try it first
 
@@ -31,6 +34,16 @@ Install the CLI and run its built-in, read-only demo:
 pipx install git+https://github.com/dbwls99706/agent-thanks.git
 agent-thanks demo
 ```
+
+Without `pipx` (Windows, conda, or a plain virtual environment), install the
+latest release wheel or the current `main` archive with pip:
+
+```bash
+python -m pip install "https://github.com/dbwls99706/agent-thanks/archive/refs/heads/main.zip"
+```
+
+Release wheels and their SHA-256 checksums are attached to every
+[GitHub Release](https://github.com/dbwls99706/agent-thanks/releases).
 
 The install requires network access. The demo itself makes no network requests,
 reads no credentials, writes no files, and changes no Stars. It includes both
@@ -44,12 +57,15 @@ Preview one task without authenticating to GitHub:
 agent-thanks run \
   --repo . \
   --base HEAD \
-  --session path/to/agent-session.log \
+  --session path/to/agent-transcript.jsonl \
   --dry-run
 ```
 
 This writes `.agent-thanks-report.json`, explains every candidate, and prints
-which verified repositories would be offered for approval. Review or export the
+which verified repositories would be offered for approval. The session file can
+be an agent transcript (JSON or JSON Lines) or a plain-text command log; plain
+text carries no results, so its commands stay review-only unless you add
+`--trust-session` to attest that they succeeded. Review or export the
 same report at any time:
 
 ```bash
@@ -73,7 +89,7 @@ GitHub account: @octocat
 Each new Star requires an explicit yes. The default is No.
 
 [verified | high] https://github.com/BehaviorTree/BehaviorTree.CPP
-  - Session shows a substantive repository-use command (session.log:8)
+  - Session ran a repository-use command that completed successfully (session.jsonl:8)
 Star this repository? [y/N/q] y
 
 Proceed with 1 star(s)? [y/N] y
@@ -96,7 +112,7 @@ contains only Stars created by that invocation.
 
 | Result | Meaning | Star behavior |
 | --- | --- | --- |
-| Verified use | High-confidence evidence of a newly added dependency, clone, Git install, submodule, or explicit provenance | Eligible for a default-No `y/N` prompt |
+| Verified use | A newly declared direct dependency, a clone, Git install, or submodule command whose successful completion is recorded, or an explicit provenance statement | Eligible for a default-No `y/N` prompt |
 | Reference to review | A GitHub URL appeared, but meaningful use is not established | Visible in reports; never eligible for Star |
 | Unresolved dependency | A package could not be mapped to a GitHub source | Reported without guessing or mutation |
 
@@ -121,16 +137,30 @@ CI workflows useful without turning a human signal into an unattended action.
 | `Cargo.toml` | Rust direct dependencies | High |
 | `go.mod` | Direct Go modules; GitHub paths map locally | High |
 | `.gitmodules` | GitHub submodules | High |
-| Session log | Clone, submodule, Git install, or explicit code-provenance lines | High |
-| Plain GitHub URL in a session log | Any public GitHub repository | Low; review only |
+| Agent transcript or hook log | Clone, submodule, or Git install commands with a recorded successful result; line-initial provenance in agent prose | High |
+| Plain-text session log | The same commands without any recorded result | Low unless `--trust-session` attests success |
+| Plain GitHub URL in a session log, transcript, or agent prose | Any public GitHub repository | Low; review only |
 
-High-confidence session evidence includes:
+Session commands that can count as use:
 
 - `git clone` and `gh repo clone`
 - `git submodule add`
 - Git-based `pip`, `uv`, npm, pnpm, Yarn, Cargo, and Go commands
-- Provenance lines that start with `copied from`, `adapted from`, or
-  `used code from` and name the repository as their direct target
+
+A command counts only when a recorded success belongs to it. The statement must
+be a single command, or a chain joined only by `&&` whose other segments are
+trivially safe (`cd`, `mkdir`, `export`, and similar). `git clone URL || true`,
+`git clone URL; echo ok`, `git clone URL | tee log`, `git clone URL &`,
+`eval 'exit 0' && git clone URL`, `git clone URL && make`, and a tool call that
+runs several lines can exit successfully while the clone failed or never ran,
+so they stay references. Provenance lines that start with `copied from`,
+`adapted from`, or `used code from` and name the repository as their direct
+target count as use on their own.
+
+Manifest evidence is separate: a newly declared direct dependency counts because
+the project now declares it, not because an install is known to have succeeded.
+The report keeps the two kinds apart (`direct_dependency` versus
+`session_usage`).
 
 Package names from PyPI, npm, and crates.io are mapped through public registry
 metadata. `--offline` disables those lookups. GitHub-hosted Go modules, Git
@@ -159,7 +189,7 @@ unobservable influences.
 Use `HEAD` as the project state before current working-tree changes:
 
 ```bash
-agent-thanks run --repo . --base HEAD --session session.log --dry-run
+agent-thanks run --repo . --base HEAD --session transcript.jsonl --dry-run
 ```
 
 ### Work already committed
@@ -167,7 +197,7 @@ agent-thanks run --repo . --base HEAD --session session.log --dry-run
 Point `--base` to the revision immediately before the task:
 
 ```bash
-agent-thanks run --repo . --base HEAD~1 --session session.log --dry-run
+agent-thanks run --repo . --base HEAD~1 --session transcript.jsonl --dry-run
 ```
 
 ### Dependency changes only
@@ -190,7 +220,7 @@ terminal.
 ### Work without registry lookups
 
 ```bash
-agent-thanks scan --repo . --session session.log --offline
+agent-thanks scan --repo . --session transcript.jsonl --offline
 ```
 
 Packages that need registry metadata remain in the unresolved section. They are
@@ -208,6 +238,133 @@ Every requested repository must exist in the report and already have
 high-confidence meaningful-use evidence. Each still receives its own prompt.
 
 More examples are in the [usage recipes](docs/recipes.md).
+
+## Coding agent integration
+
+Agents such as Claude Code, Codex CLI, and Gemini CLI clone repositories and
+install packages on your behalf. `agent-thanks` can read what they did in two
+ways, and neither interrupts the agent or changes a Star:
+
+1. **Transcripts.** Pass the agent's session transcript with `--session`; JSON
+   and JSON Lines files are detected automatically. A command counts only when
+   a known shell tool (`Bash`, `shell`, `run_shell_command`, and similar)
+   executed it, the transcript records an exact success for that call
+   (`is_error` equal to `false`, exit code 0, or a success status) with no
+   failure signal beside it, the call is a single logical line, and the
+   statement is pure enough for that success to belong to the command. A
+   failed or conflicting result, a result with no signal, a missing result, a
+   transcript that records no results at all, a multi-line invocation, or a
+   call to any other tool only ever produces references, and the evidence says
+   which case applied. In the agent's prose,
+   only a line-initial provenance statement such as
+   `Adapted from https://github.com/owner/repository` counts as use; every
+   other URL, including commands quoted in Markdown code fences, stays a
+   review-only reference. Tool output, your prompts, and hidden reasoning are
+   never treated as actions.
+2. **Hooks.** `agent-thanks hook record` appends every executed shell command
+   to `.agent-thanks/sessions/<session>.jsonl` as a structured entry with its
+   recorded `status` (`ok`, `error`, or `unknown`) and the `basis` for it. An
+   explicit result in the hook payload always decides; without one, the entry
+   is `unknown` unless the hook runs with `--from claude-code`, whose post-tool
+   event fires only after a successful run. The contract is never inferred
+   from the payload. `agent-thanks hook stop` reads this log as the primary
+   evidence for actions, merges the transcript as secondary evidence for prose
+   provenance and result-paired calls, promotes only `ok` entries and recorded
+   successes, writes
+   `.agent-thanks/reports/<session>.json` (and a copy at
+   `.agent-thanks/report.json` as the latest result), and announces
+   repositories the first time they show verified use in that session. Logs
+   and reports older than 30 days are pruned, and the directory ignores itself
+   through its own `.gitignore`. Hooks exit successfully even when something
+   goes wrong, so they can never block the agent.
+
+Find the newest transcript for the current project without knowing its path:
+
+```bash
+agent-thanks run --from claude-code --dry-run
+agent-thanks scan --from codex --output -
+agent-thanks scan --from gemini
+```
+
+| Agent | Where transcripts live | `--from` lookup |
+| --- | --- | --- |
+| Claude Code | `~/.claude/projects/<project-path-with-dashes>/*.jsonl` | Newest file for the project directory |
+| Codex CLI | `$CODEX_HOME/sessions/**/rollout-*.jsonl` (default `~/.codex`) | Newest file whose recorded directory equals the project |
+| Gemini CLI | `~/.gemini/tmp/**/*.json` | Newest file whose recorded directory equals the project |
+
+`CLAUDE_CONFIG_DIR` and `CODEX_HOME` are honored. Directories are compared
+exactly after normalization, never by substring, and a hook payload that
+carries a session or thread identifier must match the transcript's identifier
+too. A lookup that cannot confirm the project fails instead of guessing; pass
+the file with `--session` then.
+
+### Claude Code plugin
+
+The repository doubles as a plugin marketplace. Inside Claude Code:
+
+```text
+/plugin marketplace add dbwls99706/agent-thanks
+/plugin install agent-thanks@agent-thanks
+```
+
+The plugin installs two hooks and one command. After each completed turn that
+ran shell commands, the `Stop` hook scans the project and, when a repository
+shows verified use for the first time, shows a one-line notice such as:
+
+```text
+agent-thanks: this task shows verified open-source use of BehaviorTree/BehaviorTree.CPP.
+Review the evidence and approve Stars in a terminal: agent-thanks star .agent-thanks/report.json
+```
+
+`/thanks` shows the current report inside the session. Approval still happens
+in your own terminal with `agent-thanks star .agent-thanks/report.json`, one
+default-No prompt per repository. The `agent-thanks` command must be on `PATH`
+for the hooks to run.
+
+Without the plugin, the same hooks work from `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "agent-thanks hook record --from claude-code" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "agent-thanks hook stop --from claude-code" }] }]
+  }
+}
+```
+
+### Codex CLI and Gemini CLI
+
+Hook-based support is the reliable path for both agents; transcript reading is
+best effort, because their transcript formats are not stable interfaces.
+
+Codex versions with hooks can run the same two entry points as the Claude Code
+plugin, with `--from codex`: `agent-thanks hook record --from codex` after each
+tool call and `agent-thanks hook stop --from codex` when a turn ends. The stop
+payload carries `session_id`, `cwd`, and `transcript_path`, so no lookup is
+needed. Because the Codex post-tool hook also fires for failed commands, a
+Codex entry is `ok` only when the `tool_response` carries a successful exit
+status; otherwise it is recorded as `error` or `unknown` and never promoted.
+The transcript adapter recognizes Codex `function_call` and `custom_tool_call`
+records for shell tools such as `shell` and `exec_command` when they carry a
+paired output; other shapes yield references only. Gemini CLI transcripts are
+read the same way, and a call whose result cannot be judged stays a reference.
+
+Without hooks, point `notify` at the stop hook:
+
+```toml
+# $CODEX_HOME/config.toml
+notify = ["agent-thanks", "hook", "stop", "--from", "codex"]
+```
+
+Codex appends its notification payload as the last argument. The payload
+carries the working directory and thread identifier but no transcript path, so
+`--from codex` selects the rollout under `$CODEX_HOME/sessions` whose recorded
+directory equals the working directory and whose session identifier equals the
+thread. The report lands in `.agent-thanks/reports/<thread>.json`; review it
+later with `agent-thanks star` on that file.
+
+Automation stops at detection by design. No hook, plugin, or transcript flag
+authenticates to GitHub or changes a Star.
 
 ## Markdown evidence export
 
@@ -308,6 +465,7 @@ agent-thanks review   Inspect report evidence in the terminal
 agent-thanks export   Render a shareable Markdown evidence list
 agent-thanks star     Approve eligible Stars one repository at a time
 agent-thanks unstar   Revoke exact Stars with interactive confirmation
+agent-thanks hook     Detection-only entry points for coding-agent hooks
 ```
 
 Run `agent-thanks COMMAND --help` for every option.
