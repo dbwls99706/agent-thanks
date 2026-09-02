@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Restore repository detection for editable VCS requirements such as
+  `-e git+https://github.com/owner/repository.git#egg=name`, which 0.4.1 left
+  unresolved.
+- Never map a dependency through PyPI, npm, or crates.io when its manifest pins
+  a Git, URL, local path, workspace, or alternative-registry source. Such
+  dependencies count only when the pinned source itself names a GitHub
+  repository and are otherwise reported as unresolved.
+
 ## 0.4.1 - 2026-09-02
 
 - Match high-confidence session evidence to the exact repository targeted by a

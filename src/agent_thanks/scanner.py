@@ -58,9 +58,9 @@ class ProjectScanner:
             for dependency in new_dependencies:
                 if dependency.identity in old_identities:
                     continue
-                repository = dependency.repository or self.resolver.resolve(
-                    dependency.ecosystem, dependency.name
-                )
+                repository = dependency.repository
+                if repository is None and dependency.from_registry:
+                    repository = self.resolver.resolve(dependency.ecosystem, dependency.name)
                 if repository is None:
                     unresolved.append(
                         UnresolvedDependency(

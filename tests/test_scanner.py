@@ -51,6 +51,40 @@ class ScannerTests(unittest.TestCase):
             self.assertTrue(by_name["BehaviorTree/BehaviorTree.CPP"].recommended)
             self.assertFalse(by_name["example/read-only"].recommended)
 
+    def test_pinned_requirements_never_resolve_through_the_registry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git(root, "init")
+            git(root, "config", "user.name", "Test")
+            git(root, "config", "user.email", "test@example.com")
+            manifest = root / "requirements.txt"
+            manifest.write_text("requests>=2\n", encoding="utf-8")
+            git(root, "add", "requirements.txt")
+            git(root, "commit", "-m", "base")
+
+            manifest.write_text(
+                "requests>=2\n"
+                "-e git+https://github.com/someone/fork-lib.git#egg=fork-lib\n"
+                "git+https://gitlab.com/acme/private.git#egg=private\n",
+                encoding="utf-8",
+            )
+            registry_calls: list[str] = []
+
+            def fetcher(url: str) -> dict:
+                registry_calls.append(url)
+                return {"info": {"project_urls": {"Source": "https://github.com/decoy/upstream"}}}
+
+            report = ProjectScanner(
+                root, resolver=PackageRepositoryResolver(fetcher=fetcher)
+            ).scan()
+
+            repositories = {item.repository for item in report.candidates}
+            self.assertIn("someone/fork-lib", repositories)
+            self.assertNotIn("decoy/upstream", repositories)
+            self.assertEqual(registry_calls, [])
+            unresolved = {(item.ecosystem, item.package) for item in report.unresolved_dependencies}
+            self.assertEqual(unresolved, {("pypi", "private")})
+
     def test_session_command_promotes_only_its_repository_target(self) -> None:
         evidence = self.session_evidence(
             "git clone https://github.com/real/used.git  "
