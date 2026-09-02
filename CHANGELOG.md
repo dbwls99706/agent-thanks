@@ -16,7 +16,8 @@ All notable changes to this project will be documented in this file.
 - Treat an existing dependency that is repinned to a different repository
   source as new use of that repository, with evidence that names the source
   change.
-- Report a malformed JSON report as an error instead of a traceback.
+- Validate evidence confidence and meaningful-use fields when reading a report,
+  and report malformed JSON reports as errors instead of a traceback.
 
 ## 0.4.1 - 2026-09-02
 

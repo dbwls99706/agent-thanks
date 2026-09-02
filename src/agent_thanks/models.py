@@ -20,12 +20,24 @@ class Evidence:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "Evidence":
+        if not isinstance(value, dict):
+            raise ValueError("Malformed report: evidence must be an object")
+        kind, source, detail = value.get("kind"), value.get("source"), value.get("detail")
+        confidence, meaningful = value.get("confidence"), value.get("meaningful")
+        if not all(isinstance(item, str) for item in (kind, source, detail)):
+            raise ValueError(
+                "Malformed report: evidence kind, source, and detail must be strings"
+            )
+        if not isinstance(confidence, str) or confidence not in CONFIDENCE_RANK:
+            raise ValueError(f"Malformed report: unknown evidence confidence {confidence!r}")
+        if not isinstance(meaningful, bool):
+            raise ValueError("Malformed report: evidence meaningful must be true or false")
         return cls(
-            kind=str(value["kind"]),
-            source=str(value["source"]),
-            detail=str(value["detail"]),
-            confidence=str(value["confidence"]),
-            meaningful=bool(value["meaningful"]),
+            kind=kind,
+            source=source,
+            detail=detail,
+            confidence=confidence,
+            meaningful=meaningful,
         )
 
 
@@ -58,9 +70,19 @@ class Candidate:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "Candidate":
+        if not isinstance(value, dict):
+            raise ValueError("Malformed report: candidate must be an object")
+        repository = value.get("repository")
+        if not isinstance(repository, str) or not repository:
+            raise ValueError(
+                "Malformed report: candidate repository must be a non-empty string"
+            )
+        evidence = value.get("evidence", [])
+        if not isinstance(evidence, list):
+            raise ValueError("Malformed report: candidate evidence must be a list")
         return cls(
-            repository=str(value["repository"]),
-            evidence=[Evidence.from_dict(item) for item in value.get("evidence", [])],
+            repository=repository,
+            evidence=[Evidence.from_dict(item) for item in evidence],
         )
 
 
