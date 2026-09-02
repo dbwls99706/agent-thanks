@@ -102,19 +102,26 @@ class Report:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "Report":
+        if not isinstance(value, dict):
+            raise ValueError("Malformed report: expected a JSON object")
         if value.get("schema_version") != 1:
             raise ValueError("Unsupported report schema version")
-        return cls(
-            root=str(value["root"]),
-            base=value.get("base"),
-            candidates=[Candidate.from_dict(item) for item in value.get("candidates", [])],
-            unresolved_dependencies=[
-                UnresolvedDependency(**item)
-                for item in value.get("unresolved_dependencies", [])
-            ],
-            generated_at=str(value["generated_at"]),
-            schema_version=1,
-        )
+        try:
+            return cls(
+                root=str(value["root"]),
+                base=value.get("base"),
+                candidates=[Candidate.from_dict(item) for item in value.get("candidates", [])],
+                unresolved_dependencies=[
+                    UnresolvedDependency(**item)
+                    for item in value.get("unresolved_dependencies", [])
+                ],
+                generated_at=str(value["generated_at"]),
+                schema_version=1,
+            )
+        except KeyError as error:
+            raise ValueError(f"Malformed report: missing field {error}") from error
+        except (TypeError, AttributeError) as error:
+            raise ValueError(f"Malformed report: {error}") from error
 
     @classmethod
     def read(cls, path: Path) -> "Report":

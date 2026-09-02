@@ -32,6 +32,23 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(restored.candidates[0].repository, "owner/repo")
         self.assertTrue(restored.candidates[0].recommended)
 
+    def test_malformed_report_is_a_value_error(self) -> None:
+        base = {"schema_version": 1, "generated_at": "now", "root": "."}
+        with self.assertRaisesRegex(ValueError, "Malformed report"):
+            Report.from_dict({**base, "candidates": [{"repo": "typo/key"}]})
+        with self.assertRaisesRegex(ValueError, "Malformed report"):
+            Report.from_dict(
+                {
+                    **base,
+                    "candidates": [],
+                    "unresolved_dependencies": [
+                        {"ecosystem": "pypi", "package": "x", "source": "s", "extra": 1}
+                    ],
+                }
+            )
+        with self.assertRaisesRegex(ValueError, "Malformed report"):
+            Report.from_dict(["not", "an", "object"])  # type: ignore[arg-type]
+
 
 if __name__ == "__main__":
     unittest.main()
