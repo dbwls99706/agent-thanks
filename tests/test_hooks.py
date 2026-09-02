@@ -103,6 +103,27 @@ class HookRecordTests(IsolatedEnvironmentTestCase):
             self.assertTrue(hooked["recommended"])
             self.assertEqual({e["confidence"] for e in hooked["evidence"]}, {"high", "low"})
 
+    def test_hook_failure_overrides_a_transcript_success_for_the_same_call(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            transcript = Path(directory) / "t.jsonl"
+            records = [
+                {"type": "response_item", "payload": {"type": "function_call", "name": "shell", "call_id": "c1",
+                 "arguments": json.dumps({"command": "git clone https://github.com/conflict/repo"})}},
+                {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "c1",
+                 "output": json.dumps({"output": "", "metadata": {"exit_code": 0}})}},
+            ]
+            transcript.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+            record = {"cwd": directory, "session_id": "s", "tool_call_id": "c1", "tool_name": "shell",
+                      "tool_input": {"command": "git clone https://github.com/conflict/repo"},
+                      "tool_response": "Exit code: 128\nOutput:\nfatal"}
+            run(["hook", "record", "--from", "codex", json.dumps(record)])
+            payload = json.dumps({"cwd": directory, "session_id": "s", "transcript_path": str(transcript)})
+            self.assertEqual(run(["hook", "stop", "--offline", payload]), (0, ""))
+            report = json.loads((Path(directory) / ".agent-thanks" / "reports" / "s.json").read_text(encoding="utf-8"))
+            candidate = report["candidates"][0]
+            self.assertFalse(candidate["recommended"])
+            self.assertTrue(all(e["confidence"] == "low" for e in candidate["evidence"]))
+
     def test_outcome_follows_the_agent_contract(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             def record(agent: list[str], response: object, command: str) -> None:

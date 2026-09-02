@@ -247,11 +247,16 @@ ways, and neither interrupts the agent or changes a Star:
 
 1. **Transcripts.** Pass the agent's session transcript with `--session`; JSON
    and JSON Lines files are detected automatically. A command counts only when
-   a known shell tool (`Bash`, `shell`, `run_shell_command`, and similar)
-   executed it, the transcript records an exact success for that call
-   (`is_error` equal to `false`, exit code 0, or a success status) with no
-   failure signal beside it, the call is a single logical line, and the
-   statement is pure enough for that success to belong to the command. A
+   a known shell tool (`Bash`, `shell`, `exec_command`, `run_shell_command`,
+   and similar) that the agent itself called executed it, the transcript
+   records an exact success for that call in the result envelope (`is_error`
+   equal to `false`, an exit code of 0, a success status, or an exit code in
+   the header that Codex writes ahead of the program output) with no failure
+   signal beside it, the call is a single logical line, and the statement is a
+   single command or an `&&` chain whose other segments are trivially safe
+   (`cd`, `mkdir`, `echo`, and similar). Program output can never supply a
+   success signal, several results for one call combine failure first, and
+   call-shaped objects inside user or tool content are never actions. A
    failed or conflicting result, a result with no signal, a missing result, a
    transcript that records no results at all, a multi-line invocation, or a
    call to any other tool only ever produces references, and the evidence says
@@ -267,10 +272,11 @@ ways, and neither interrupts the agent or changes a Star:
    explicit result in the hook payload always decides; without one, the entry
    is `unknown` unless the hook runs with `--from claude-code`, whose post-tool
    event fires only after a successful run. The contract is never inferred
-   from the payload. `agent-thanks hook stop` reads this log as the primary
-   evidence for actions, merges the transcript as secondary evidence for prose
-   provenance and result-paired calls, promotes only `ok` entries and recorded
-   successes, writes
+   from the payload. `agent-thanks hook stop` reads this log as the authority
+   for actions: its statuses override the transcript's own results for the
+   same tool call, and a transcript command the log never saw stays
+   unconfirmed. The transcript is merged for prose provenance and for the calls
+   the log confirms. The hook promotes only `ok` entries, writes
    `.agent-thanks/reports/<session>.json` (and a copy at
    `.agent-thanks/report.json` as the latest result), and announces
    repositories the first time they show verified use in that session. Logs
@@ -334,20 +340,33 @@ Without the plugin, the same hooks work from `.claude/settings.json`:
 
 ### Codex CLI and Gemini CLI
 
-Hook-based support is the reliable path for both agents; transcript reading is
-best effort, because their transcript formats are not stable interfaces.
+Support for these agents rests on the fields their hooks and transcripts
+actually record. Nothing is promoted on guesswork, so a format that records no
+exact success yields references only.
 
-Codex versions with hooks can run the same two entry points as the Claude Code
-plugin, with `--from codex`: `agent-thanks hook record --from codex` after each
-tool call and `agent-thanks hook stop --from codex` when a turn ends. The stop
-payload carries `session_id`, `cwd`, and `transcript_path`, so no lookup is
-needed. Because the Codex post-tool hook also fires for failed commands, a
-Codex entry is `ok` only when the `tool_response` carries a successful exit
-status; otherwise it is recorded as `error` or `unknown` and never promoted.
-The transcript adapter recognizes Codex `function_call` and `custom_tool_call`
-records for shell tools such as `shell` and `exec_command` when they carry a
-paired output; other shapes yield references only. Gemini CLI transcripts are
-read the same way, and a call whose result cannot be judged stays a reference.
+Codex CLI runs hooks from `~/.codex/hooks.json` (or `.codex/hooks.json` inside
+the project) with the same event names and payload fields as Claude Code, and
+its payloads name the shell tool `Bash`:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "agent-thanks hook record --from codex" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "agent-thanks hook stop --from codex" }] }]
+  }
+}
+```
+
+The stop payload carries `session_id`, `cwd`, and `transcript_path`, so no
+lookup is needed. Because the Codex post-tool event also fires for commands
+that exit with a non-zero status, a Codex entry is `ok` only when
+`tool_response` carries a successful exit status: the JSON envelope of the
+`shell` tool (`metadata.exit_code`) or the header the `exec_command` tool
+writes ahead of the program output (`Process exited with code 0`). Anything
+else is recorded as `error` or `unknown` and never promoted. The transcript
+adapter reads Codex `function_call` and `custom_tool_call` records for
+`shell`, `exec_command`, and `exec` the same way; a call whose recorded result
+is still running, missing, or unjudgeable stays a reference.
 
 Without hooks, point `notify` at the stop hook:
 
@@ -362,6 +381,24 @@ carries the working directory and thread identifier but no transcript path, so
 directory equals the working directory and whose session identifier equals the
 thread. The report lands in `.agent-thanks/reports/<thread>.json`; review it
 later with `agent-thanks star` on that file.
+
+Gemini CLI can run the stop hook from an `AfterAgent` hook in
+`~/.gemini/settings.json`, and `--from gemini` reads its transcripts under
+`~/.gemini/tmp`:
+
+```json
+{
+  "hooks": {
+    "AfterAgent": [{ "hooks": [{ "name": "agent-thanks", "type": "command", "command": "agent-thanks hook stop --from gemini" }] }]
+  }
+}
+```
+
+Gemini CLI currently yields review-only references. Its shell tool records a
+failure explicitly (an `Exit Code` line and `isError`) but marks success only
+by the absence of those signals, and absence is never accepted as success.
+Repositories it cloned still appear in the report for review; verified use
+needs a recorded success that Gemini does not write yet.
 
 Automation stops at detection by design. No hook, plugin, or transcript flag
 authenticates to GitHub or changes a Star.

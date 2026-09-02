@@ -46,7 +46,12 @@ class ProjectScanner:
         self.resolver = resolver or PackageRepositoryResolver()
         self.trust_sessions = trust_sessions
 
-    def scan(self, session_files: Iterable[Path] = ()) -> Report:
+    def scan(
+        self,
+        session_files: Iterable[Path] = (),
+        *,
+        transcript_overrides: dict[str, str] | None = None,
+    ) -> Report:
         evidence_items: list[tuple[str, Evidence]] = []
         unresolved: list[UnresolvedDependency] = []
         baseline_identities = self._baseline_dependency_identities()
@@ -107,7 +112,11 @@ class ProjectScanner:
                 evidence_items.extend(scan_hook_log_evidence(path, str(session_file)))
                 continue
             if str(session_file) != "-" and is_transcript(path):
-                evidence_items.extend(scan_transcript_evidence(path, str(session_file)))
+                evidence_items.extend(
+                    scan_transcript_evidence(
+                        path, str(session_file), authoritative=transcript_overrides
+                    )
+                )
                 continue
             text = self._read_session(session_file)
             evidence_items.extend(

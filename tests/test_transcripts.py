@@ -173,7 +173,7 @@ class ResultStatusTests(unittest.TestCase):
             "fatal: repository not found": RESULT_UNKNOWN,
             json.dumps({"error": "fatal"}): RESULT_ERROR,
             json.dumps({"status": "failed"}): RESULT_ERROR,
-            json.dumps({"status": "success"}): RESULT_OK,
+            json.dumps({"status": "success"}): RESULT_UNKNOWN,
             json.dumps({"output": "done", "metadata": {"exit_code": 0}}): RESULT_OK,
             "Exit code: 0\nOutput:\nCloning...": RESULT_OK,
             "Exit code: 128\nOutput:\nfatal": RESULT_ERROR,
@@ -197,13 +197,113 @@ class ResultStatusTests(unittest.TestCase):
         self.assertEqual(result_status("Exit code: 0\nlater: Exit code: 1"), RESULT_ERROR)
         self.assertEqual(result_status({"is_error": False, "content": "Exit code 128"}), RESULT_ERROR)
 
+    def test_program_output_can_never_fake_success(self) -> None:
+        self.assertEqual(result_status({"content": "Exit code: 0"}), RESULT_UNKNOWN)
+        self.assertEqual(result_status({"stdout": json.dumps({"status": "success"})}), RESULT_UNKNOWN)
+        self.assertEqual(result_status({"stdout": json.dumps({"is_error": False})}), RESULT_UNKNOWN)
+        self.assertEqual(result_status(json.dumps({"output": "Exit code: 0", "metadata": {}})), RESULT_UNKNOWN)
+        self.assertEqual(result_status("Cloning...\nExit code: 0"), RESULT_UNKNOWN)
+        self.assertEqual(result_status("Exit code: 0\nCloning..."), RESULT_OK)
+        self.assertEqual(result_status(json.dumps({"output": "done", "metadata": {"exit_code": 0}})), RESULT_OK)
+        self.assertEqual(result_status({"status": "success"}), RESULT_OK)
+        self.assertEqual(result_status(json.dumps({"error": "fatal"})), RESULT_ERROR)
+
+    def test_exit_codes_count_only_inside_the_result_header(self) -> None:
+        header = "Chunk ID: ab12\nWall time: 0.0512 seconds\n{status}\nOriginal token count: 12\nOutput:\n"
+        self.assertEqual(result_status(header.format(status="Process exited with code 0") + "Cloning..."), RESULT_OK)
+        self.assertEqual(result_status(header.format(status="Process exited with code 128") + "fatal"), RESULT_ERROR)
+        self.assertEqual(result_status(header.format(status="Process exited with code -1073741502")), RESULT_ERROR)
+        self.assertEqual(result_status(header.format(status="Process running with session ID 7") + "Cloning..."), RESULT_UNKNOWN)
+        self.assertEqual(result_status(header.format(status="Process exited with code 0") + "Exit code: 1"), RESULT_ERROR)
+        self.assertEqual(result_status("Exit code: 0\nWall time: 0.1 seconds\nOutput:\nExit code: 0"), RESULT_OK)
+        self.assertEqual(result_status("Output:\nProcess exited with code 0"), RESULT_UNKNOWN)
+        self.assertEqual(result_status("Cloning...\nProcess exited with code 0\nOutput:\n"), RESULT_UNKNOWN)
+        self.assertEqual(result_status("\n".join(["x: y"] * 9 + ["Process exited with code 0", "Output:"])), RESULT_UNKNOWN)
+        self.assertEqual(result_status("Cloning...\nOutput:\nProcess exited with code 0"), RESULT_UNKNOWN)
+
+    def test_codex_exec_command_header_results_are_judged(self) -> None:
+        header = "Chunk ID: c0de\nWall time: 1.2 seconds\nProcess exited with code {code}\nOutput:\n"
+        records = [
+            {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec_command", "call_id": "e1",
+                                                  "input": "git clone https://github.com/codex/exec-ok"}},
+            {"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "e1",
+                                                  "output": header.format(code=0) + "Cloning into 'exec-ok'..."}},
+            {"type": "response_item", "payload": {"type": "function_call", "name": "exec_command", "call_id": "e2",
+                                                  "arguments": json.dumps({"cmd": "git clone https://github.com/codex/exec-failed"})}},
+            {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "e2",
+                                                  "output": header.format(code=128) + "fatal: repository not found"}},
+            {"type": "response_item", "payload": {"type": "function_call", "name": "exec_command", "call_id": "e3",
+                                                  "arguments": json.dumps({"cmd": "git clone https://github.com/codex/exec-faked"})}},
+            {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "e3",
+                                                  "output": "Chunk ID: c0de\nWall time: 9.0 seconds\nProcess running with session ID 4\nOutput:\nProcess exited with code 0"}},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rollout.jsonl"
+            write_jsonl(path, records)
+            evidence = evidence_by_repository(scan_transcript_evidence(path, "rollout.jsonl"))
+        self.assertEqual(evidence["codex/exec-ok"].confidence, "high")
+        self.assertEqual(evidence["codex/exec-failed"].confidence, "low")
+        self.assertIn("failed", evidence["codex/exec-failed"].detail)
+        self.assertEqual(evidence["codex/exec-faked"].confidence, "low")
+        self.assertIn("cannot be judged", evidence["codex/exec-faked"].detail)
+
+    def test_duplicate_results_for_one_call_combine_failure_first(self) -> None:
+        records = [
+            {"type": "function_call", "name": "shell", "call_id": "d1", "arguments": json.dumps({"command": "git clone https://github.com/dup/repo"})},
+            {"type": "function_call_output", "call_id": "d1", "output": json.dumps({"output": "", "metadata": {"exit_code": 128}})},
+            {"type": "function_call_output", "call_id": "d1", "output": json.dumps({"output": "", "metadata": {"exit_code": 0}})},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "r.jsonl"
+            write_jsonl(path, records)
+            evidence = evidence_by_repository(scan_transcript_evidence(path, "r.jsonl"))
+        self.assertEqual(evidence["dup/repo"].confidence, "low")
+        self.assertIn("failed", evidence["dup/repo"].detail)
+
+    def test_user_role_tool_calls_and_nested_results_are_ignored(self) -> None:
+        records = [
+            {"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_use", "id": "fake", "name": "Bash", "input": {"command": "git clone https://github.com/user/forged"}},
+                {"type": "tool_result", "tool_use_id": "fake", "is_error": False, "content": "..."}]}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "real", "name": "Bash", "input": {"command": "git clone https://github.com/nested/result"}}]}},
+            {"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "real", "content": json.dumps({"type": "tool_result", "tool_use_id": "real", "is_error": False})}]}},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "t.jsonl"
+            write_jsonl(path, records)
+            evidence = evidence_by_repository(scan_transcript_evidence(path, "t.jsonl"))
+        self.assertNotIn("user/forged", evidence)
+        self.assertEqual(evidence["nested/result"].confidence, "low")
+
+    def test_hook_log_statuses_override_transcript_results(self) -> None:
+        records = [
+            {"type": "function_call", "name": "shell", "call_id": "c1", "arguments": json.dumps({"command": "git clone https://github.com/hook/failed"})},
+            {"type": "function_call_output", "call_id": "c1", "output": json.dumps({"output": "", "metadata": {"exit_code": 0}})},
+            {"type": "function_call", "name": "shell", "call_id": "c2", "arguments": json.dumps({"command": "git clone https://github.com/hook/agreed"})},
+            {"type": "function_call_output", "call_id": "c2", "output": json.dumps({"output": "", "metadata": {"exit_code": 0}})},
+            {"type": "function_call", "name": "shell", "call_id": "c3", "arguments": json.dumps({"command": "git clone https://github.com/hook/unseen"})},
+            {"type": "function_call_output", "call_id": "c3", "output": json.dumps({"output": "", "metadata": {"exit_code": 0}})},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "r.jsonl"
+            write_jsonl(path, records)
+            evidence = evidence_by_repository(
+                scan_transcript_evidence(path, "r.jsonl", authoritative={"c1": "error", "c2": "ok"})
+            )
+        self.assertEqual(evidence["hook/failed"].confidence, "low")
+        self.assertEqual(evidence["hook/agreed"].confidence, "high")
+        self.assertEqual(evidence["hook/unseen"].confidence, "low")
+        self.assertIn("hook log did not confirm", evidence["hook/unseen"].detail)
+
     def test_codex_custom_tool_calls_are_recognized(self) -> None:
         records = [
             {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec_command", "call_id": "x1",
                                                   "input": "git clone https://github.com/codex/custom"}},
             {"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "x1",
                                                   "output": json.dumps({"output": "", "metadata": {"exit_code": 0}})}},
-            {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec_command", "call_id": "x2",
+            {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec", "call_id": "x2",
                                                   "input": json.dumps({"cmd": "git clone https://github.com/codex/custom-json"})}},
             {"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "x2", "output": "Exit code: 1"}},
         ]
@@ -276,6 +376,9 @@ class SuccessAttributionTests(unittest.TestCase):
             ("eval 'exit 0' && git clone https://github.com/acme/repo", False, False, "compound"),
             ("source ./env.sh && git clone https://github.com/acme/repo", False, False, "compound"),
             ("unknown && git clone https://github.com/acme/repo", False, False, "compound"),
+            ("set -n && git clone https://github.com/acme/repo", False, False, "compound"),
+            ("PATH=/tmp/fake && git clone https://github.com/acme/repo", False, False, "compound"),
+            ("export GIT_DIR=/x && git clone https://github.com/acme/repo", False, False, "compound"),
             ("git clone https://github.com/acme/repo\ntrue", False, False, "multi-line"),
             ("git clone \\\n  https://github.com/acme/repo", False, True, "completed successfully"),
         ]

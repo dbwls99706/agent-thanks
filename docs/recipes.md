@@ -115,10 +115,34 @@ Claude Code users can install the plugin bundled with this repository:
 /plugin install agent-thanks@agent-thanks
 ```
 
-Codex CLI users can point `notify` at the stop hook instead:
+Codex CLI users can run the same two hooks from `~/.codex/hooks.json`; Codex
+hook payloads name the shell tool `Bash`:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "agent-thanks hook record --from codex" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "agent-thanks hook stop --from codex" }] }]
+  }
+}
+```
+
+Without hooks, point `notify` in `$CODEX_HOME/config.toml` at the stop hook:
 
 ```toml
 notify = ["agent-thanks", "hook", "stop", "--from", "codex"]
+```
+
+Gemini CLI users can run the stop hook after each turn from
+`~/.gemini/settings.json`; Gemini results are review-only until Gemini records
+an explicit success:
+
+```json
+{
+  "hooks": {
+    "AfterAgent": [{ "hooks": [{ "name": "agent-thanks", "type": "command", "command": "agent-thanks hook stop --from gemini" }] }]
+  }
+}
 ```
 
 After a completed turn that ran shell commands, the report is in

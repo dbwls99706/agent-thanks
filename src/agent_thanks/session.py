@@ -883,19 +883,7 @@ class CommandAnalysis:
     pure: bool
 
 
-_CHAIN_PREFIX_ALLOWLIST = {
-    "cd",
-    "pushd",
-    "popd",
-    "mkdir",
-    "export",
-    "set",
-    "true",
-    "echo",
-    "printf",
-    "pwd",
-}
-_ASSIGNMENT_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_CHAIN_PREFIX_ALLOWLIST = {"cd", "pushd", "popd", "mkdir", "true", "echo", "printf", "pwd"}
 
 
 def analyze_command_line(line: str) -> CommandAnalysis:
@@ -918,16 +906,16 @@ def analyze_command_line(line: str) -> CommandAnalysis:
 def _is_safe_chain_segment(segment: list[str]) -> bool:
     """Only trivially side-effect-free commands may share a chain with a repository command.
 
-    Anything else, including shell builtins that alter control flow (``exit``,
-    ``exec``, ``eval``, ``source``, ``builtin``) and arbitrary executables, makes
-    the chain impure: a successful exit status can then no longer prove that the
-    repository command ran and succeeded.
+    Anything else makes the chain impure: control-flow builtins (``exit``,
+    ``exec``, ``eval``, ``source``, ``builtin``), ``set`` (``set -n`` stops
+    execution while exiting 0), ``export`` and variable assignments (they can
+    redirect ``PATH`` to a fake ``git``), and arbitrary executables. A successful
+    exit status can then no longer prove that the repository command ran and
+    succeeded.
     """
     command = _strip_command_wrappers(segment)
     if not command:
         return False
-    if all(_ASSIGNMENT_PATTERN.match(token) for token in command):
-        return True
     return _executable_name(command[0]) in _CHAIN_PREFIX_ALLOWLIST
 
 
@@ -979,6 +967,7 @@ OUTCOME_ATTESTED = "attested"
 OUTCOME_ERROR = "error"
 OUTCOME_UNKNOWN = "unknown"
 OUTCOME_MISSING = "missing"
+OUTCOME_UNCONFIRMED = "unconfirmed"
 _PROMOTING_OUTCOMES = {OUTCOME_OK, OUTCOME_ATTESTED}
 
 PROVENANCE_DETAIL = "Session states that code was adapted from this repository"
@@ -996,6 +985,10 @@ _DEMOTED_DETAILS = {
     ),
     OUTCOME_MISSING: (
         "Session ran a repository command but recorded no result; verify actual reuse"
+    ),
+    OUTCOME_UNCONFIRMED: (
+        "Session ran a repository command whose success the hook log did not confirm; "
+        "verify actual reuse"
     ),
 }
 COMPOUND_DETAIL = (

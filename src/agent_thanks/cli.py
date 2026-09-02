@@ -21,6 +21,7 @@ from .transcripts import (
     RESULT_OK,
     RESULT_UNKNOWN,
     is_shell_tool,
+    load_hook_log_statuses,
     locate_transcript,
     result_status,
     transcript_locations,
@@ -631,13 +632,16 @@ def _hook_stop(payload: dict[str, object], *, agent: str | None, offline: bool) 
     session_id = _session_id(payload)
     _prune_state(state)
 
-    # The structured hook log is the primary evidence for actions: each entry
-    # carries the status the hook contract established. The transcript is
-    # secondary; it adds prose provenance and result-paired calls.
+    # The structured hook log is the authority for actions: each entry carries
+    # the status the hook contract established, and those statuses override the
+    # transcript's own results for the same tool call. The transcript adds prose
+    # provenance; a transcript command the hook log never saw stays unconfirmed.
     sources: list[Path] = []
+    overrides: dict[str, str] | None = None
     log = _session_log(state, session_id)
     if log.is_file():
         sources.append(log)
+        overrides = load_hook_log_statuses(log)
     transcript = payload.get("transcript_path")
     if isinstance(transcript, str) and Path(transcript).is_file():
         sources.append(Path(transcript))
@@ -651,7 +655,9 @@ def _hook_stop(payload: dict[str, object], *, agent: str | None, offline: bool) 
         return 0
 
     resolver = PackageRepositoryResolver(offline=offline)
-    report = ProjectScanner(root, base="HEAD", resolver=resolver).scan(sources)
+    report = ProjectScanner(root, base="HEAD", resolver=resolver).scan(
+        sources, transcript_overrides=overrides
+    )
     report_path = _report_path(state, session_id)
     report.write(report_path)
     latest = state / "report.json"

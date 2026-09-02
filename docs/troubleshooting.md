@@ -93,7 +93,11 @@ add `--trust-session` only when you can vouch that the commands succeeded. A
 command from a transcript stays low when its recorded result failed, cannot be
 judged, or is missing, and when the statement combines commands with `;`,
 `||`, `|`, or `&`, because a successful exit then does not belong to the
-repository command. The evidence detail names which case applied.
+repository command. When a hook log exists for the session, it is the
+authority: a transcript command whose success the log did not confirm stays
+low as well. Gemini CLI commands stay low because Gemini records failures
+explicitly but marks success only by their absence, which is never accepted.
+The evidence detail names which case applied.
 
 Use an explicit provenance phrase such as `adapted from` only when it truthfully
 describes the task. The phrase must start its line and point directly at the
@@ -109,7 +113,8 @@ stay silent. Check `.agent-thanks/reports/<session>.json` (or the latest copy
 at `.agent-thanks/report.json`) for the full result, including references and
 unresolved dependencies. The hook also stays silent when the turn ran no shell
 commands, when every clone or install in the turn failed or left no judgeable
-result, when the transcript path is missing and `--from` cannot find a
+result (every Gemini CLI turn, until Gemini records an explicit success), when
+the transcript path is missing and `--from` cannot find a
 transcript whose recorded directory and session match, or when `agent-thanks`
 is not on `PATH` for the agent's shell. Only
 known shell tools count as commands; other tools contribute references. Hook

@@ -29,6 +29,7 @@ from .session import (
     OUTCOME_ERROR,
     OUTCOME_MISSING,
     OUTCOME_OK,
+    OUTCOME_UNCONFIRMED,
     OUTCOME_UNKNOWN,
     scan_prose_evidence,
     scan_reference_evidence,
@@ -47,6 +48,7 @@ SHELL_TOOLS = frozenset(
         "run_shell_command",
         "run_terminal_cmd",
         "run_command",
+        "exec",
         "terminal",
         "powershell",
         "cmd",
@@ -83,7 +85,12 @@ _OUTPUT_KEYS = {
     "signature",
 }
 _DOCUMENT_LIST_KEYS = ("messages", "history", "items", "turns", "records", "events", "entries")
-_EXIT_CODE_PATTERN = re.compile(r"(?i)\bexit[ _]?code\b\D{0,3}(\d+)")
+_EXIT_CODE_PATTERN = re.compile(r"(?i)\b(?:exit[ _]?code|exited with(?: exit)? code)\b\D{0,3}(-?\d+)")
+_OUTPUT_MARKER = "Output:"
+_MAX_HEADER_LINES = 8
+_HEADER_LINE_PATTERN = re.compile(
+    r"^(?:[A-Za-z][A-Za-z _-]{0,40}:(?:\s.*)?|Process (?:exited with code -?\d+|running with session ID \S+))\s*$"
+)
 _MAX_DEPTH = 32
 
 RESULT_OK = "ok"
@@ -159,27 +166,34 @@ def load_transcript_records(path: Path) -> list[tuple[int, Any]]:
     return [(1, document)]
 
 
-def iter_transcript_records(path: Path) -> Iterator[TranscriptRecord]:
+def iter_transcript_records(
+    path: Path, *, authoritative: Mapping[str, str] | None = None
+) -> Iterator[TranscriptRecord]:
     """Yield (record number, kind, text, outcome).
 
     Kinds: 'command' for a shell command (outcome is 'ok', 'error', 'unknown',
     or 'missing' when the transcript recorded no result for that call), 'text'
     for agent prose, and 'reference' for everything else that may mention a
     repository. Outcome is None for non-command records.
+
+    When ``authoritative`` is given (statuses per tool call id from a hook log),
+    it replaces the transcript's own results: a command is 'ok' only if the hook
+    log says so, and a command the hook log never saw is 'unconfirmed'.
     """
     records = load_transcript_records(path)
     results = _index_results(records)
-    tracked = bool(results)
     for number, record in records:
-        for kind, text, outcome in _walk(record, None, 0, results, tracked):
+        for kind, text, outcome in _walk(record, None, 0, results, authoritative):
             if text.strip():
                 yield number, kind, text, outcome
 
 
-def scan_transcript_evidence(path: Path, source: str) -> list[tuple[str, Evidence]]:
+def scan_transcript_evidence(
+    path: Path, source: str, *, authoritative: Mapping[str, str] | None = None
+) -> list[tuple[str, Evidence]]:
     """Classify every record of a transcript; labels point at the record number."""
     items: list[tuple[str, Evidence]] = []
-    for number, kind, text, outcome in iter_transcript_records(path):
+    for number, kind, text, outcome in iter_transcript_records(path, authoritative=authoritative):
         label = f"{source}:{number}"
         if kind == "command":
             items.extend(
@@ -217,6 +231,37 @@ def is_hook_log(path: Path) -> bool:
     except OSError:
         return False
     return False
+
+
+def load_hook_log_statuses(path: Path) -> dict[str, str]:
+    """Return the combined status per tool call id recorded in a hook log."""
+    statuses: dict[str, list[str]] = {}
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        call_id = entry.get("tool_call_id")
+        if isinstance(call_id, str) and call_id:
+            statuses.setdefault(call_id, []).append(str(entry.get("status")))
+    return {call_id: combine_statuses(values) for call_id, values in statuses.items()}
+
+
+def combine_statuses(statuses: Iterable[str]) -> str:
+    """Combine every recorded status of one call: any failure wins, only unanimous success is ok."""
+    values = list(statuses)
+    if not values:
+        return RESULT_UNKNOWN
+    if RESULT_ERROR in values:
+        return RESULT_ERROR
+    if all(value == RESULT_OK for value in values):
+        return RESULT_OK
+    return RESULT_UNKNOWN
 
 
 def scan_hook_log_evidence(path: Path, source: str) -> list[tuple[str, Evidence]]:
@@ -383,14 +428,40 @@ def _head_records(path: Path, *, limit: int) -> list[Any]:
 
 
 def _index_results(records: Iterable[tuple[int, Any]]) -> dict[str, str]:
-    """Map tool call identifiers to 'ok' or 'error' from recorded results."""
-    statuses: dict[str, str] = {}
+    """Map tool call identifiers to a combined status from recorded result envelopes.
+
+    Only envelope positions are read: a record, its ``payload``, and the items
+    of its message ``content`` or ``parts`` lists. Result-shaped objects nested
+    inside program output are never indexed. Several results for one call are
+    combined with failure first.
+    """
+    statuses: dict[str, list[str]] = {}
     for _, record in records:
-        for node in _iter_dicts(record, 0):
+        for node in _result_envelopes(record):
             entry = _result_of(node)
             if entry is not None:
-                statuses[entry[0]] = entry[1]
-    return statuses
+                statuses.setdefault(entry[0], []).append(entry[1])
+    return {call_id: combine_statuses(values) for call_id, values in statuses.items()}
+
+
+def _result_envelopes(record: Any) -> Iterator[dict[str, Any]]:
+    if not isinstance(record, dict):
+        return
+    yield record
+    payload = record.get("payload")
+    if isinstance(payload, dict):
+        yield payload
+    message = record.get("message") if isinstance(record.get("message"), dict) else record
+    for container in (
+        message.get("content"),
+        message.get("parts"),
+        record.get("content"),
+        record.get("parts"),
+    ):
+        if isinstance(container, list):
+            for item in container:
+                if isinstance(item, dict):
+                    yield item
 
 
 def _iter_dicts(node: Any, depth: int) -> Iterator[dict[str, Any]]:
@@ -406,18 +477,18 @@ def _iter_dicts(node: Any, depth: int) -> Iterator[dict[str, Any]]:
 
 
 def result_status(value: Any) -> str:
-    """Judge a recorded tool result with failure-first semantics.
+    """Judge a recorded tool result envelope with failure-first semantics.
 
-    Every explicit signal in the value is collected. Any failure signal
-    (``is_error`` true, a non-zero exit code, a non-empty ``error`` field, a
-    failure status, or an "Exit code: N" line with N != 0) makes the result
-    RESULT_ERROR, even when a success signal is also present. Without a failure
-    signal, only an exact success signal (``is_error`` equal to ``False``, exit
-    code 0, a success status, or an "Exit code: 0" line) makes it RESULT_OK.
-    Everything else is RESULT_UNKNOWN, which callers must never treat as
-    success.
+    Success signals are accepted only from structured envelope fields: an
+    ``is_error`` flag equal to ``False``, an integer exit code (top level or
+    under ``metadata``), an envelope ``status``, or an "Exit code: 0" header on
+    the first line of a text envelope. Program output (``output``, ``stdout``,
+    ``content``, ``message``, ``text``) can never create a success signal, so a
+    program that prints a success message cannot fake one. Failure signals are
+    accepted from anywhere. Any failure makes the result RESULT_ERROR; without
+    a failure, an exact success makes it RESULT_OK; otherwise RESULT_UNKNOWN.
     """
-    failures, successes = _result_signals(value, 0)
+    failures, successes = _envelope_signals(value, 0)
     if failures:
         return RESULT_ERROR
     if successes:
@@ -425,9 +496,9 @@ def result_status(value: Any) -> str:
     return RESULT_UNKNOWN
 
 
-def _result_signals(value: Any, depth: int) -> tuple[int, int]:
+def _envelope_signals(value: Any, depth: int) -> tuple[int, int]:
     failures = successes = 0
-    if depth > _MAX_DEPTH:
+    if depth > 4:
         return failures, successes
     if isinstance(value, dict):
         if "is_error" in value:
@@ -436,13 +507,12 @@ def _result_signals(value: Any, depth: int) -> tuple[int, int]:
                 successes += 1
             elif flag is True or (not isinstance(flag, bool) and bool(flag)):
                 failures += 1
-        for key in ("exit_code", "exitCode", "returncode", "status_code"):
-            code = value.get(key)
-            if isinstance(code, int) and not isinstance(code, bool):
-                if code == 0:
-                    successes += 1
-                else:
-                    failures += 1
+        code = _exit_code(value)
+        if code is not None:
+            if code == 0:
+                successes += 1
+            else:
+                failures += 1
         if value.get("error"):
             failures += 1
         status = value.get("status")
@@ -452,34 +522,94 @@ def _result_signals(value: Any, depth: int) -> tuple[int, int]:
                 failures += 1
             elif lowered in _SUCCESS_STATUSES:
                 successes += 1
-        for key in (*_RESULT_TEXT_KEYS, "metadata"):
-            if key in value:
-                nested_failures, nested_successes = _result_signals(value[key], depth + 1)
-                failures += nested_failures
-                successes += nested_successes
+        for key in _RESULT_TEXT_KEYS:
+            failures += _output_failures(value.get(key), depth + 1)
         return failures, successes
     if isinstance(value, str):
         stripped = value.strip()
-        if stripped.startswith(("{", "[")):
+        if stripped.startswith("{"):
             try:
                 parsed = json.loads(stripped)
             except json.JSONDecodeError:
                 parsed = None
-            if isinstance(parsed, (dict, list)):
-                return _result_signals(parsed, depth + 1)
-        for match in _EXIT_CODE_PATTERN.finditer(value):
+            if isinstance(parsed, dict):
+                # A JSON-encoded envelope: trust only its exit code for success.
+                code = _exit_code(parsed)
+                if code is not None:
+                    if code == 0:
+                        successes += 1
+                    else:
+                        failures += 1
+                if parsed.get("error"):
+                    failures += 1
+                status = parsed.get("status")
+                if isinstance(status, str) and status.casefold() in _FAILURE_STATUSES:
+                    failures += 1
+                for key in _RESULT_TEXT_KEYS:
+                    failures += _output_failures(parsed.get(key), depth + 1)
+                return failures, successes
+        header, body = _split_text_envelope(stripped)
+        for match in _EXIT_CODE_PATTERN.finditer(header):
             if int(match.group(1)) == 0:
                 successes += 1
             else:
                 failures += 1
-        return failures, successes
-    if isinstance(value, list):
-        for item in value:
-            nested_failures, nested_successes = _result_signals(item, depth + 1)
-            failures += nested_failures
-            successes += nested_successes
+        failures += _output_failures(body, depth + 1)
         return failures, successes
     return failures, successes
+
+
+def _split_text_envelope(text: str) -> tuple[str, str]:
+    """Split a text result into its header and the program output that follows.
+
+    Codex writes a header block (``Exit code: N``, or ``Chunk ID`` / ``Wall
+    time`` / ``Process exited with code N`` lines) and then an ``Output:`` line
+    before the program output. The header is the lines before the first
+    ``Output:`` line when that line is among the first few and every line before
+    it is a header field; otherwise only the first line is the header. Success
+    is read from the header alone, because a program can print anything after
+    the marker but nothing before it.
+    """
+    lines = text.splitlines()
+    for index, line in enumerate(lines[:_MAX_HEADER_LINES]):
+        if line.strip() == _OUTPUT_MARKER:
+            if all(_HEADER_LINE_PATTERN.match(item.strip()) for item in lines[:index]):
+                return "\n".join(lines[:index]), "\n".join(lines[index + 1 :])
+            break
+    return "\n".join(lines[:1]), "\n".join(lines[1:])
+
+
+def _exit_code(mapping: dict[str, Any]) -> int | None:
+    """Read a structured exit code from an envelope or its ``metadata`` block."""
+    for key in ("exit_code", "exitCode", "returncode", "status_code"):
+        value = mapping.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    metadata = mapping.get("metadata")
+    if isinstance(metadata, dict):
+        return _exit_code(metadata)
+    return None
+
+
+def _output_failures(output: Any, depth: int) -> int:
+    """Count failure signals inside program output; output never yields success."""
+    if depth > 4:
+        return 0
+    if isinstance(output, str):
+        return sum(1 for match in _EXIT_CODE_PATTERN.finditer(output) if int(match.group(1)) != 0)
+    if isinstance(output, list):
+        return sum(_output_failures(item, depth + 1) for item in output)
+    if isinstance(output, dict):
+        total = 0
+        code = _exit_code(output)
+        if code not in (None, 0):
+            total += 1
+        if output.get("error"):
+            total += 1
+        for key in _RESULT_TEXT_KEYS:
+            total += _output_failures(output.get(key), depth + 1)
+        return total
+    return 0
 
 
 def _result_of(node: dict[str, Any]) -> tuple[str, str] | None:
@@ -498,14 +628,18 @@ def _result_of(node: dict[str, Any]) -> tuple[str, str] | None:
 
 
 def _walk(
-    node: Any, role: str | None, depth: int, results: dict[str, str], tracked: bool
+    node: Any,
+    role: str | None,
+    depth: int,
+    results: dict[str, str],
+    authoritative: Mapping[str, str] | None,
 ) -> list[tuple[str, str, str | None]]:
     found: list[tuple[str, str, str | None]] = []
     if depth > _MAX_DEPTH:
         return found
     if isinstance(node, list):
         for item in node:
-            found.extend(_walk(item, role, depth + 1, results, tracked))
+            found.extend(_walk(item, role, depth + 1, results, authoritative))
         return found
     if not isinstance(node, dict):
         return found
@@ -513,13 +647,13 @@ def _walk(
     role = _role_of(node, role)
     call = _call_of(node)
     if call is not None:
+        if role in _USER_ROLES:
+            return found  # call-shaped objects in user or tool content are never actions
         name, parameters, call_id = call
         if is_shell_tool(name):
             command = _command_of(parameters)
             if command:
-                status = results.get(call_id) if call_id is not None else None
-                outcome = HOOK_LOG_STATUSES.get(status or "", OUTCOME_MISSING)
-                found.append(("command", command, outcome))
+                found.append(("command", command, _command_outcome(call_id, results, authoritative)))
         else:
             parameter_text = _parameter_text(parameters)
             if parameter_text:
@@ -533,8 +667,18 @@ def _walk(
         if key in _OUTPUT_KEYS:
             continue
         if isinstance(value, (dict, list)):
-            found.extend(_walk(value, role, depth + 1, results, tracked))
+            found.extend(_walk(value, role, depth + 1, results, authoritative))
     return found
+
+
+def _command_outcome(
+    call_id: str | None, results: dict[str, str], authoritative: Mapping[str, str] | None
+) -> str:
+    if authoritative is not None:
+        status = authoritative.get(call_id) if call_id is not None else None
+        return HOOK_LOG_STATUSES.get(status or "", OUTCOME_UNCONFIRMED)
+    status = results.get(call_id) if call_id is not None else None
+    return HOOK_LOG_STATUSES.get(status or "", OUTCOME_MISSING)
 
 
 def _role_of(node: dict[str, Any], inherited: str | None) -> str | None:
