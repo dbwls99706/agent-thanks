@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.4.2 - 2026-09-02
+
 - Restore repository detection for editable VCS requirements such as
   `-e git+https://github.com/owner/repository.git#egg=name`, which 0.4.1 left
   unresolved.
