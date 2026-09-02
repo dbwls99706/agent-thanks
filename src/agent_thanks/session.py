@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from bisect import bisect_left
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 import re
 import shlex
 from urllib.parse import urlparse
@@ -307,7 +308,8 @@ def _deduplicate_repositories(repositories: Iterable[str]) -> list[str]:
 
 def _split_shell_segments(
     line: str,
-) -> list[tuple[str | None, list[str]]] | None:
+) -> tuple[list[tuple[str | None, list[str]]], str | None] | None:
+    """Split a shell line into (separator, tokens) segments plus any trailing separator."""
     try:
         lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|")
         lexer.whitespace_split = True
@@ -329,11 +331,14 @@ def _split_shell_segments(
             preceding_separator = token
             continue
         current.append(token)
+    trailing: str | None = None
     if current:
         segments.append((preceding_separator, current))
     elif preceding_separator in {"&&", "||", "|"}:
         return None
-    return segments
+    else:
+        trailing = preceding_separator
+    return segments, trailing
 
 
 def _strip_command_wrappers(tokens: list[str]) -> list[str]:
@@ -861,37 +866,69 @@ def _provenance_repositories(line: str) -> list[str]:
     return _deduplicate_repositories(repositories)
 
 
-def _meaningful_session_repositories(line: str) -> list[str]:
+@dataclass(frozen=True)
+class CommandAnalysis:
+    """Repositories targeted by supported commands in one shell statement.
+
+    ``pure`` is True when the statement is a single command, or a chain joined
+    only by ``&&`` in which every segment is either a repository command or a
+    trivially safe command such as ``cd`` or ``mkdir``; then a successful exit
+    status of the whole statement proves that every repository command in it ran
+    and succeeded. Statements using ``;``, ``||``, ``|``, or ``&``, and chains
+    containing any other command (``exit``, ``eval``, ``source``, ``make``, an
+    unknown executable), are never pure.
+    """
+
+    repositories: list[str]
+    pure: bool
+
+
+_CHAIN_PREFIX_ALLOWLIST = {
+    "cd",
+    "pushd",
+    "popd",
+    "mkdir",
+    "export",
+    "set",
+    "true",
+    "echo",
+    "printf",
+    "pwd",
+}
+_ASSIGNMENT_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def analyze_command_line(line: str) -> CommandAnalysis:
+    split = _split_shell_segments(line)
+    if not split:
+        return CommandAnalysis([], False)
+    segments, trailing = split
+    if not segments:
+        return CommandAnalysis([], False)
+    pure = trailing is None and all(separator in (None, "&&") for separator, _ in segments)
     repositories: list[str] = []
-    previous_status: bool | None = None
-    skipped_pipeline = False
-    terminated = False
-    segments = _split_shell_segments(line)
-    for separator, segment in segments or []:
-        if terminated:
-            continue
-        if separator == "|" and skipped_pipeline:
-            continue
-        skipped_pipeline = False
-        if separator == "&&" and previous_status is not True:
-            skipped_pipeline = True
-            continue
-        if separator == "||" and previous_status is not False:
-            skipped_pipeline = True
-            continue
-        repositories.extend(_repositories_from_command(segment))
-        command = _strip_command_wrappers(segment)
-        executable = _executable_name(command[0]) if command else ""
-        if executable in {"exec", "exit"}:
-            terminated = True
-        if executable == "true":
-            previous_status = True
-        elif executable == "false":
-            previous_status = False
-        else:
-            previous_status = None
-    repositories.extend(_provenance_repositories(line))
-    return _deduplicate_repositories(repositories)
+    for _, segment in segments:
+        found = _repositories_from_command(segment)
+        repositories.extend(found)
+        if not found and not _is_safe_chain_segment(segment):
+            pure = False
+    return CommandAnalysis(_deduplicate_repositories(repositories), pure)
+
+
+def _is_safe_chain_segment(segment: list[str]) -> bool:
+    """Only trivially side-effect-free commands may share a chain with a repository command.
+
+    Anything else, including shell builtins that alter control flow (``exit``,
+    ``exec``, ``eval``, ``source``, ``builtin``) and arbitrary executables, makes
+    the chain impure: a successful exit status can then no longer prove that the
+    repository command ran and succeeded.
+    """
+    command = _strip_command_wrappers(segment)
+    if not command:
+        return False
+    if all(_ASSIGNMENT_PATTERN.match(token) for token in command):
+        return True
+    return _executable_name(command[0]) in _CHAIN_PREFIX_ALLOWLIST
 
 
 def _fence_marker(line: str) -> tuple[str, int] | None:
@@ -937,7 +974,111 @@ def _logical_session_lines(text: str) -> Iterable[tuple[int, str]]:
         yield start_line, pending
 
 
-def scan_session_evidence(text: str, source: str) -> list[tuple[str, Evidence]]:
+OUTCOME_OK = "ok"
+OUTCOME_ATTESTED = "attested"
+OUTCOME_ERROR = "error"
+OUTCOME_UNKNOWN = "unknown"
+OUTCOME_MISSING = "missing"
+_PROMOTING_OUTCOMES = {OUTCOME_OK, OUTCOME_ATTESTED}
+
+PROVENANCE_DETAIL = "Session states that code was adapted from this repository"
+REFERENCE_DETAIL = "Repository was referenced in the session; verify actual reuse"
+_USAGE_DETAILS = {
+    OUTCOME_OK: "Session ran a repository-use command that completed successfully",
+    OUTCOME_ATTESTED: (
+        "Session ran a repository-use command; success attested with --trust-session"
+    ),
+}
+_DEMOTED_DETAILS = {
+    OUTCOME_ERROR: "Session ran a repository command that failed; not counted as use",
+    OUTCOME_UNKNOWN: (
+        "Session ran a repository command whose result cannot be judged; verify actual reuse"
+    ),
+    OUTCOME_MISSING: (
+        "Session ran a repository command but recorded no result; verify actual reuse"
+    ),
+}
+COMPOUND_DETAIL = (
+    "Session ran a compound shell statement; the repository command's own result "
+    "cannot be confirmed"
+)
+MULTILINE_DETAIL = (
+    "Session ran a multi-line shell invocation; the repository command's own result "
+    "cannot be confirmed"
+)
+
+Classification = list[tuple[str, bool, str]]
+
+
+def scan_session_evidence(
+    text: str,
+    source: str,
+    *,
+    line_labels: bool = True,
+    outcome: str = OUTCOME_MISSING,
+    single_statement: bool = False,
+) -> list[tuple[str, Evidence]]:
+    """Classify shell-style lines whose commands share one recorded outcome.
+
+    A repository command counts as use only when ``outcome`` is a recorded
+    success (or an explicit attestation) and the statement is pure, so that the
+    success provably belongs to that command. With ``single_statement`` the
+    whole text is one tool invocation that received one result; if it spans
+    several logical lines, no command in it can claim that result. Provenance
+    statements count as use regardless of outcome; everything else stays a
+    reference.
+    """
+    if outcome not in _USAGE_DETAILS and outcome not in _DEMOTED_DETAILS:
+        raise ValueError(f"Unknown session outcome: {outcome}")
+    multiline = single_statement and sum(1 for _ in _logical_session_lines(text)) > 1
+
+    def classify(line: str) -> Classification:
+        classified: Classification = [
+            (repository, True, PROVENANCE_DETAIL)
+            for repository in _provenance_repositories(line)
+        ]
+        analysis = analyze_command_line(line)
+        if outcome not in _PROMOTING_OUTCOMES:
+            detail, meaningful = _DEMOTED_DETAILS[outcome], False
+        elif multiline:
+            detail, meaningful = MULTILINE_DETAIL, False
+        elif analysis.pure:
+            detail, meaningful = _USAGE_DETAILS[outcome], True
+        else:
+            detail, meaningful = COMPOUND_DETAIL, False
+        classified.extend(
+            (repository, meaningful, detail) for repository in analysis.repositories
+        )
+        return classified
+
+    return _scan_lines(text, source, classify, line_labels=line_labels)
+
+
+def scan_prose_evidence(
+    text: str, source: str, *, line_labels: bool = True
+) -> list[tuple[str, Evidence]]:
+    """Classify agent prose: only an explicit provenance statement counts as use."""
+
+    def classify(line: str) -> Classification:
+        return [(repository, True, PROVENANCE_DETAIL) for repository in _provenance_repositories(line)]
+
+    return _scan_lines(text, source, classify, line_labels=line_labels)
+
+
+def scan_reference_evidence(
+    text: str, source: str, *, line_labels: bool = True
+) -> list[tuple[str, Evidence]]:
+    """Record repository mentions only; nothing in the text can count as use."""
+    return _scan_lines(text, source, lambda line: [], line_labels=line_labels)
+
+
+def _scan_lines(
+    text: str,
+    source: str,
+    classify: Callable[[str], Classification],
+    *,
+    line_labels: bool,
+) -> list[tuple[str, Evidence]]:
     items: list[tuple[str, Evidence]] = []
     fence: tuple[str, int] | None = None
     heredocs: list[str] = []
@@ -946,7 +1087,7 @@ def scan_session_evidence(text: str, source: str) -> list[tuple[str, Evidence]]:
             repository
             for repository, _, _ in extract_github_repository_occurrences(line)
         ]
-        meaningful_repositories: list[str] = []
+        classified: dict[str, tuple[str, bool, str]] = {}
         stripped = line.strip()
         if fence is not None:
             marker_character, minimum_length = fence
@@ -964,24 +1105,27 @@ def scan_session_evidence(text: str, source: str) -> list[tuple[str, Evidence]]:
             elif line.startswith("\t") or line.startswith("    "):
                 pass
             else:
-                meaningful_repositories = _meaningful_session_repositories(line)
+                for repository, meaningful, detail in classify(line):
+                    key = repository.casefold()
+                    if key not in classified or (meaningful and not classified[key][1]):
+                        classified[key] = (repository, meaningful, detail)
                 detected_heredocs = _heredoc_delimiters(line)
                 heredocs = detected_heredocs if detected_heredocs is not None else ["\0"]
-        repositories = _deduplicate_repositories([*references, *meaningful_repositories])
-        meaningful_keys = {repository.casefold() for repository in meaningful_repositories}
+        repositories = _deduplicate_repositories(
+            [*references, *(entry[0] for entry in classified.values())]
+        )
+        label = f"{source}:{line_number}" if line_labels else source
         for repository in repositories:
-            meaningful = repository.casefold() in meaningful_keys
+            _, meaningful, detail = classified.get(
+                repository.casefold(), (repository, False, REFERENCE_DETAIL)
+            )
             items.append(
                 (
                     repository,
                     Evidence(
                         kind="session_usage" if meaningful else "session_reference",
-                        source=f"{source}:{line_number}",
-                        detail=(
-                            "Session shows a substantive repository-use command"
-                            if meaningful
-                            else "Repository was referenced in the session; verify actual reuse"
-                        ),
+                        source=label,
+                        detail=detail,
                         confidence="high" if meaningful else "low",
                         meaningful=meaningful,
                     ),

@@ -395,5 +395,28 @@ class CliTests(unittest.TestCase):
         self.assertIn("Doctor found 1 issue(s).", output.getvalue())
 
 
+
+class DemoConsistencyTests(unittest.TestCase):
+    def test_bundled_example_reproduces_the_demo_classification(self) -> None:
+        from agent_thanks.resolver import PackageRepositoryResolver
+        from agent_thanks.scanner import ProjectScanner
+
+        example = Path(__file__).resolve().parent.parent / "examples" / "session.jsonl"
+        report = ProjectScanner(
+            example.parent, resolver=PackageRepositoryResolver(offline=True)
+        ).scan([example])
+        classification = {
+            item.repository: (item.confidence, item.recommended) for item in report.candidates
+        }
+        self.assertEqual(
+            classification,
+            {
+                "BehaviorTree/BehaviorTree.CPP": ("high", True),
+                "example/reference-only": ("low", False),
+                "ros-navigation/navigation2": ("high", True),
+            },
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
