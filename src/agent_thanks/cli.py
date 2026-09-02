@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -14,9 +16,21 @@ from .github import GitHubClient, GitHubError, validate_repository
 from .models import Candidate, Evidence, Report
 from .resolver import PackageRepositoryResolver
 from .scanner import ProjectScanner, ScanError
+from .transcripts import (
+    RESULT_ERROR,
+    RESULT_OK,
+    RESULT_UNKNOWN,
+    is_shell_tool,
+    locate_transcript,
+    result_status,
+    transcript_locations,
+)
 
 
 DEFAULT_REPORT = ".agent-thanks-report.json"
+STATE_DIRECTORY = ".agent-thanks"
+SESSION_LOG_MAX_AGE_SECONDS = 30 * 24 * 3600
+AGENTS = ("claude-code", "codex", "gemini")
 
 
 class InteractionError(RuntimeError):
@@ -99,6 +113,38 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor.add_argument("--repo", type=Path, default=Path.cwd(), help="Project root")
 
+    hook = commands.add_parser(
+        "hook",
+        help="Entry points for coding-agent hooks; detection only, never a Star",
+    )
+    hook_commands = hook.add_subparsers(dest="hook_command", required=True)
+    record = hook_commands.add_parser(
+        "record",
+        help=(
+            "Append an executed shell command with its recorded outcome to "
+            f"{STATE_DIRECTORY}/sessions/<session>.jsonl"
+        ),
+    )
+    record.add_argument("payload", nargs="?", help="Hook JSON; read from stdin when omitted")
+    record.add_argument(
+        "--from",
+        dest="agent",
+        choices=AGENTS,
+        help="Agent whose hook contract applies when the payload records no result",
+    )
+    stop = hook_commands.add_parser(
+        "stop",
+        help="Scan the finished turn and announce verified repositories without starring",
+    )
+    stop.add_argument("payload", nargs="?", help="Hook JSON; read from stdin when omitted")
+    stop.add_argument(
+        "--from",
+        dest="agent",
+        choices=AGENTS,
+        help="Locate this agent's transcript when the payload carries no transcript path",
+    )
+    stop.add_argument("--offline", action="store_true", help="Skip package registry lookups")
+
     return parser
 
 
@@ -117,6 +163,12 @@ def _add_scan_arguments(parser: argparse.ArgumentParser) -> None:
         help="Agent transcript or log file; repeatable, '-' reads stdin",
     )
     parser.add_argument(
+        "--from",
+        dest="agent",
+        choices=AGENTS,
+        help="Scan the newest transcript this coding agent wrote for the project",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=Path(DEFAULT_REPORT),
@@ -126,6 +178,14 @@ def _add_scan_arguments(parser: argparse.ArgumentParser) -> None:
         "--offline",
         action="store_true",
         help="Do not query package registries to map packages to repositories",
+    )
+    parser.add_argument(
+        "--trust-session",
+        action="store_true",
+        help=(
+            "Attest that the commands in plain-text session logs completed successfully; "
+            "without it those commands stay review-only references"
+        ),
     )
 
 
@@ -149,6 +209,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _unstar(args)
         if args.command == "doctor":
             return _doctor(args)
+        if args.command == "hook":
+            return _hook(args)
     except (OSError, ValueError, InteractionError, ScanError, GitHubError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
@@ -161,7 +223,26 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _build_report(args: argparse.Namespace) -> Report:
     resolver = PackageRepositoryResolver(offline=args.offline)
-    return ProjectScanner(args.repo, base=args.base, resolver=resolver).scan(args.session)
+    sessions = list(args.session)
+    if args.agent:
+        sessions.append(_locate_agent_transcript(args.agent, args.repo))
+    scanner = ProjectScanner(
+        args.repo, base=args.base, resolver=resolver, trust_sessions=args.trust_session
+    )
+    return scanner.scan(sessions)
+
+
+def _locate_agent_transcript(agent: str, root: Path) -> Path:
+    cwd = root.expanduser().resolve()
+    transcript = locate_transcript(agent, cwd, Path.home())
+    if transcript is None:
+        searched = ", ".join(str(path) for path in transcript_locations(agent, cwd, Path.home()))
+        raise ValueError(
+            f"No {agent} transcript found for {cwd} (searched: {searched}). "
+            "Pass the transcript path with --session instead."
+        )
+    print(f"Transcript: {transcript}", file=sys.stderr)
+    return transcript
 
 
 def _demo() -> int:
@@ -174,8 +255,8 @@ def _demo() -> int:
                 [
                     Evidence(
                         kind="session_usage",
-                        source="demo-session.log:2",
-                        detail="Session shows a substantive repository-use command",
+                        source="demo-session.jsonl:2",
+                        detail="Session ran a repository-use command that completed successfully",
                         confidence="high",
                         meaningful=True,
                     )
@@ -186,7 +267,7 @@ def _demo() -> int:
                 [
                     Evidence(
                         kind="session_reference",
-                        source="demo-session.log:1",
+                        source="demo-session.jsonl:1",
                         detail="Repository was referenced in the session; verify actual reuse",
                         confidence="low",
                         meaningful=False,
@@ -198,8 +279,8 @@ def _demo() -> int:
                 [
                     Evidence(
                         kind="session_usage",
-                        source="demo-session.log:3",
-                        detail="Session shows a substantive repository-use command",
+                        source="demo-session.jsonl:4",
+                        detail="Session states that code was adapted from this repository",
                         confidence="high",
                         meaningful=True,
                     )
@@ -422,6 +503,217 @@ def _print_undo(repositories: list[str]) -> None:
         return
     values = " ".join(repositories)
     print(f"Undo this batch: agent-thanks unstar {values}")
+
+
+def _hook(args: argparse.Namespace) -> int:
+    """Run a hook entry point. Hooks never fail the agent and never touch GitHub."""
+    try:
+        payload = _hook_payload(args.payload)
+        if args.hook_command == "record":
+            return _hook_record(payload, agent=args.agent)
+        return _hook_stop(payload, agent=args.agent, offline=args.offline)
+    except Exception as error:  # noqa: BLE001 - a hook must never interrupt the agent
+        print(f"agent-thanks hook: {error}", file=sys.stderr)
+        return 0
+
+
+def _hook_payload(raw: str | None) -> dict[str, object]:
+    if raw is None:
+        if sys.stdin is None or sys.stdin.isatty():
+            return {}
+        raw = sys.stdin.read()
+    if not raw.strip():
+        return {}
+    payload = json.loads(raw)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _hook_root(payload: dict[str, object]) -> Path:
+    cwd = payload.get("cwd")
+    root = Path(cwd) if isinstance(cwd, str) and cwd else Path.cwd()
+    return root.expanduser().resolve()
+
+
+def _state_directory(root: Path) -> Path:
+    state = root / STATE_DIRECTORY
+    state.mkdir(exist_ok=True)
+    ignore = state / ".gitignore"
+    if not ignore.exists():
+        ignore.write_text("*\n", encoding="utf-8")
+    return state
+
+
+def _session_id(payload: dict[str, object]) -> str | None:
+    for key in ("session_id", "sessionId", "thread-id", "thread_id", "conversation_id"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _safe_name(session_id: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", session_id)[:80] or "session"
+
+
+def _session_log(state: Path, session_id: str | None) -> Path:
+    directory = state / "sessions"
+    directory.mkdir(exist_ok=True)
+    return directory / f"{_safe_name(session_id or 'default')}.jsonl"
+
+
+def _report_path(state: Path, session_id: str | None) -> Path:
+    if session_id is None:
+        return state / "report.json"
+    directory = state / "reports"
+    directory.mkdir(exist_ok=True)
+    return directory / f"{_safe_name(session_id)}.json"
+
+
+def _infer_agent(payload: dict[str, object]) -> str | None:
+    """Infer only what is safe to infer: a Codex notify payload by its distinctive shape.
+
+    Hook payloads from different agents share ``hook_event_name`` and
+    ``transcript_path``, so no agent-specific contract is ever inferred from
+    them; that needs an explicit ``--from``.
+    """
+    kind = payload.get("type")
+    if (isinstance(kind, str) and kind.startswith("agent-turn")) or "thread-id" in payload:
+        return "codex"
+    return None
+
+
+def _hook_outcome(payload: dict[str, object], agent: str | None) -> tuple[str, str]:
+    """Return (status, basis) for a post-tool hook payload.
+
+    An explicit result in ``tool_response`` always wins. Without one, only the
+    Claude Code contract, whose post-tool event fires after a successful tool
+    run, justifies recording success, and only when ``--from claude-code`` was
+    passed explicitly; every other case records ``unknown``.
+    """
+    status = result_status(payload.get("tool_response"))
+    if status == RESULT_OK:
+        return RESULT_OK, "exit_status"
+    if status == RESULT_ERROR:
+        return RESULT_ERROR, "tool_response"
+    if agent == "claude-code":
+        return RESULT_OK, "successful_post_tool_event"
+    return RESULT_UNKNOWN, "no_result"
+
+
+def _hook_record(payload: dict[str, object], *, agent: str | None) -> int:
+    tool_name = payload.get("tool_name") or payload.get("tool")
+    tool_input = payload.get("tool_input") or payload.get("input")
+    if not is_shell_tool(tool_name) or not isinstance(tool_input, dict):
+        return 0
+    command = tool_input.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return 0
+    status, basis = _hook_outcome(payload, agent)
+    entry = {
+        "agent": agent,
+        "session_id": _session_id(payload),
+        "tool_call_id": payload.get("tool_use_id") or payload.get("tool_call_id"),
+        "command": command,
+        "status": status,
+        "basis": basis,
+        "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    state = _state_directory(_hook_root(payload))
+    log = _session_log(state, _session_id(payload))
+    with log.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    return 0
+
+
+def _hook_stop(payload: dict[str, object], *, agent: str | None, offline: bool) -> int:
+    root = _hook_root(payload)
+    state = _state_directory(root)
+    session_id = _session_id(payload)
+    _prune_state(state)
+
+    # The structured hook log is the primary evidence for actions: each entry
+    # carries the status the hook contract established. The transcript is
+    # secondary; it adds prose provenance and result-paired calls.
+    sources: list[Path] = []
+    log = _session_log(state, session_id)
+    if log.is_file():
+        sources.append(log)
+    transcript = payload.get("transcript_path")
+    if isinstance(transcript, str) and Path(transcript).is_file():
+        sources.append(Path(transcript))
+    else:
+        agent = agent or _infer_agent(payload)
+        if agent is not None:
+            located = locate_transcript(agent, root, Path.home(), session_id=session_id)
+            if located is not None:
+                sources.append(located)
+    if not sources:
+        return 0
+
+    resolver = PackageRepositoryResolver(offline=offline)
+    report = ProjectScanner(root, base="HEAD", resolver=resolver).scan(sources)
+    report_path = _report_path(state, session_id)
+    report.write(report_path)
+    latest = state / "report.json"
+    if report_path != latest:
+        report.write(latest)
+
+    announced = _load_announced(state / "announced.json")
+    key = session_id or "default"
+    seen = {item.casefold() for item in announced.get(key, [])}
+    fresh = [
+        candidate.repository
+        for candidate in report.candidates
+        if candidate.recommended and candidate.repository.casefold() not in seen
+    ]
+    if not fresh:
+        return 0
+    announced[key] = sorted(seen | {item.casefold() for item in fresh})
+    (state / "announced.json").write_text(
+        json.dumps(announced, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    print(json.dumps({"systemMessage": _announcement(fresh, report_path, root)}))
+    return 0
+
+
+def _load_announced(path: Path) -> dict[str, list[str]]:
+    if not path.is_file():
+        return {}
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(loaded, list):
+        return {"default": [str(item) for item in loaded]}
+    if isinstance(loaded, dict):
+        return {
+            str(key): [str(item) for item in value]
+            for key, value in loaded.items()
+            if isinstance(value, list)
+        }
+    return {}
+
+
+def _prune_state(state: Path) -> None:
+    cutoff = time.time() - SESSION_LOG_MAX_AGE_SECONDS
+    for directory, pattern in ((state / "sessions", "*.jsonl"), (state / "reports", "*.json")):
+        if not directory.is_dir():
+            continue
+        for path in directory.glob(pattern):
+            try:
+                if path.stat().st_mtime < cutoff:
+                    path.unlink()
+            except OSError:
+                continue
+
+
+def _announcement(repositories: list[str], report_path: Path, root: Path) -> str:
+    try:
+        shown = report_path.relative_to(root).as_posix()
+    except ValueError:
+        shown = str(report_path)
+    names = ", ".join(repositories)
+    return (
+        f"agent-thanks: this task shows verified open-source use of {names}. "
+        f"Review the evidence and approve Stars in a terminal: agent-thanks star {shown}"
+    )
 
 
 def _doctor(args: argparse.Namespace) -> int:
