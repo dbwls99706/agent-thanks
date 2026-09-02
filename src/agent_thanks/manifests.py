@@ -113,6 +113,10 @@ def _is_pinned_source(value: str) -> bool:
     return "://" in value or value.casefold().startswith(_VCS_PREFIXES)
 
 
+def _looks_like_local_path(value: str) -> bool:
+    return value.startswith((".", "/", "~", "\\")) or "/" in value or "\\" in value
+
+
 def _url_label(value: str) -> str:
     target = value.split("+", 1)[1] if value.casefold().startswith(_VCS_SCHEME_PREFIXES) else value
     split = urlsplit(target)
@@ -129,9 +133,14 @@ def _parse_requirement(value: str) -> Dependency | None:
     if editable is not None:
         value = editable.group(1).strip()
     value = value.split(" ;", 1)[0].strip()
-    pinned = _is_pinned_source(value)
-    if editable is not None and not pinned:
-        return None
+    if not _is_pinned_source(value):
+        if editable is not None or _looks_like_local_path(value):
+            return None
+        match = _PACKAGE_NAME.match(value)
+        if not match:
+            return None
+        return Dependency("pypi", match.group(0))
+
     repository = repository_from_metadata_url(value)
 
     egg_match = re.search(r"[#&]egg=([A-Za-z0-9_.-]+)", value)
@@ -147,13 +156,7 @@ def _parse_requirement(value: str) -> Dependency | None:
             from_registry=False,
         )
 
-    if pinned:
-        return Dependency("pypi", repository or _url_label(value), repository, from_registry=False)
-
-    match = _PACKAGE_NAME.match(value)
-    if not match:
-        return None
-    return Dependency("pypi", match.group(0), repository)
+    return Dependency("pypi", repository or _url_label(value), repository, from_registry=False)
 
 
 def _parse_requirements(text: str) -> list[Dependency]:

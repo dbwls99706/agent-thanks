@@ -11,6 +11,8 @@ All notable changes to this project will be documented in this file.
   a Git, URL, local path, workspace, or alternative-registry source. Such
   dependencies count only when the pinned source itself names a GitHub
   repository and are otherwise reported as unresolved.
+- Ignore local path requirements such as `vendor/pkg` instead of reading them
+  as GitHub `owner/repository` shorthand.
 - Report a malformed JSON report as an error instead of a traceback.
 
 ## 0.4.1 - 2026-09-02

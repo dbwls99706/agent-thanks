@@ -138,6 +138,14 @@ rich = { git = "https://github.com/Textualize/rich.git" }
         self.assertFalse(by_name["helper"].from_registry)
         self.assertTrue(by_name["rich"].from_registry)
 
+    def test_local_path_requirements_are_not_github_shorthand(self) -> None:
+        for line in ("vendor/pkg", "vendor/pkg[extra]", "./vendor/pkg", "../shared", "/opt/pkg", "~/pkg"):
+            with self.subTest(line=line):
+                self.assertEqual(parse_manifest("requirements.txt", line + "\n"), [])
+
+        npm = parse_manifest("package.json", '{"dependencies":{"tool":"owner/tool"}}')
+        self.assertEqual(npm[0].repository, "owner/tool")
+
     def test_malformed_gitmodules_is_reported_as_a_parse_error(self) -> None:
         with self.assertRaisesRegex(ValueError, "invalid .gitmodules"):
             parse_manifest(".gitmodules", '[submodule "broken"\nurl = nope\n')
