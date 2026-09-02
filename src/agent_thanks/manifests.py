@@ -35,7 +35,7 @@ class Dependency:
 
 _REQUIREMENTS_FILE = re.compile(r"requirements(?:[-_.].+)?\.txt$", re.IGNORECASE)
 _PACKAGE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*")
-_EDITABLE_OPTION = re.compile(r"(?:-e|--editable)(?:=|\s+)(.*)", re.DOTALL)
+_EDITABLE_OPTION = re.compile(r"(?:--editable(?:=|\s+)|-e(?:=|\s*))(.*)", re.DOTALL)
 _VCS_SCHEME_PREFIXES = ("git+", "hg+", "svn+", "bzr+")
 _VCS_PREFIXES = _VCS_SCHEME_PREFIXES + ("git@",)
 _NON_REGISTRY_SPEC_PREFIXES = (

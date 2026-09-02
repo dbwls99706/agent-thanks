@@ -86,14 +86,16 @@ rich = { git = "https://github.com/Textualize/rich.git" }
             "-e git+https://github.com/acme/fork.git#egg=fork\n"
             "--editable git+ssh://git@github.com/acme/tool.git#egg=tool\n"
             "--editable=git+https://github.com/acme/lib.git@v2#egg=lib\n"
+            "-egit+https://github.com/acme/attached.git#egg=attached\n"
             "-e .\n"
             "-e ./vendor/local[dev]\n",
         )
         by_name = {item.name: item for item in dependencies}
-        self.assertEqual(set(by_name), {"fork", "tool", "lib"})
+        self.assertEqual(set(by_name), {"fork", "tool", "lib", "attached"})
         self.assertEqual(by_name["fork"].repository, "acme/fork")
         self.assertEqual(by_name["tool"].repository, "acme/tool")
         self.assertEqual(by_name["lib"].repository, "acme/lib")
+        self.assertEqual(by_name["attached"].repository, "acme/attached")
         self.assertFalse(any(item.from_registry for item in dependencies))
 
     def test_pinned_requirement_sources_are_not_registry_packages(self) -> None:
