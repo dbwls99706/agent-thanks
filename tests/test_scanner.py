@@ -85,6 +85,43 @@ class ScannerTests(unittest.TestCase):
             unresolved = {(item.ecosystem, item.package) for item in report.unresolved_dependencies}
             self.assertEqual(unresolved, {("pypi", "private")})
 
+    def test_repinning_a_dependency_to_a_fork_counts_as_new_use(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git(root, "init")
+            git(root, "config", "user.name", "Test")
+            git(root, "config", "user.email", "test@example.com")
+            manifest = root / "requirements.txt"
+            manifest.write_text("fork-lib>=1\n", encoding="utf-8")
+            git(root, "add", "requirements.txt")
+            git(root, "commit", "-m", "base")
+
+            manifest.write_text(
+                "-e git+https://github.com/someone/fork-lib.git#egg=fork-lib\n",
+                encoding="utf-8",
+            )
+            registry_calls: list[str] = []
+
+            def fetcher(url: str) -> dict:
+                registry_calls.append(url)
+                return {}
+
+            report = ProjectScanner(
+                root, resolver=PackageRepositoryResolver(fetcher=fetcher)
+            ).scan()
+            by_repository = {item.repository: item for item in report.candidates}
+
+            self.assertIn("someone/fork-lib", by_repository)
+            self.assertIn("Changed", by_repository["someone/fork-lib"].evidence[0].detail)
+            self.assertEqual(registry_calls, [])
+
+            git(root, "add", "requirements.txt")
+            git(root, "commit", "-m", "pin")
+            report = ProjectScanner(
+                root, resolver=PackageRepositoryResolver(offline=True)
+            ).scan()
+            self.assertEqual(report.candidates, [])
+
     def test_session_command_promotes_only_its_repository_target(self) -> None:
         evidence = self.session_evidence(
             "git clone https://github.com/real/used.git  "

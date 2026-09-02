@@ -24,8 +24,13 @@ class Dependency:
     from_registry: bool = True
 
     @property
-    def identity(self) -> tuple[str, str]:
-        return self.ecosystem, self.name.casefold().replace("_", "-")
+    def identity(self) -> tuple[str, str, str]:
+        """Ecosystem, normalized name, and the pinned repository source, if any."""
+        return (
+            self.ecosystem,
+            self.name.casefold().replace("_", "-"),
+            (self.repository or "").casefold(),
+        )
 
 
 _REQUIREMENTS_FILE = re.compile(r"requirements(?:[-_.].+)?\.txt$", re.IGNORECASE)
@@ -289,9 +294,7 @@ def _parse_gitmodules(text: str) -> list[Dependency]:
 
 
 def _unique(dependencies: list[Dependency]) -> list[Dependency]:
-    result: dict[tuple[str, str], Dependency] = {}
+    result: dict[tuple[str, str, str], Dependency] = {}
     for dependency in dependencies:
-        current = result.get(dependency.identity)
-        if current is None or (current.repository is None and dependency.repository is not None):
-            result[dependency.identity] = dependency
+        result.setdefault(dependency.identity, dependency)
     return list(result.values())

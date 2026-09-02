@@ -146,6 +146,14 @@ rich = { git = "https://github.com/Textualize/rich.git" }
         npm = parse_manifest("package.json", '{"dependencies":{"tool":"owner/tool"}}')
         self.assertEqual(npm[0].repository, "owner/tool")
 
+    def test_identity_distinguishes_pinned_repository_sources(self) -> None:
+        registry, pinned = parse_manifest(
+            "requirements.txt",
+            "fork-lib>=1\nfork_lib @ git+https://github.com/someone/fork-lib.git\n",
+        )
+        self.assertEqual(registry.identity[:2], pinned.identity[:2])
+        self.assertNotEqual(registry.identity, pinned.identity)
+
     def test_malformed_gitmodules_is_reported_as_a_parse_error(self) -> None:
         with self.assertRaisesRegex(ValueError, "invalid .gitmodules"):
             parse_manifest(".gitmodules", '[submodule "broken"\nurl = nope\n')

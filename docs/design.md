@@ -8,7 +8,8 @@ influences.
 
 The current release recognizes two evidence families:
 
-1. A direct dependency added since a Git baseline.
+1. A direct dependency added, or repinned to a different repository source,
+   since a Git baseline.
 2. A GitHub repository present in an explicitly supplied session log.
 
 Only deterministic, high-confidence evidence of substantive use makes a
