@@ -73,7 +73,10 @@ stays unresolved when:
 
 - `--offline` is enabled;
 - the registry is unavailable;
-- the package metadata has no GitHub source URL; or
+- the package metadata has no GitHub source URL;
+- the manifest pins a Git, URL, local path, or workspace source that does not
+  name a GitHub repository (registry metadata never substitutes for a pinned
+  source); or
 - the ecosystem has no registry resolver yet.
 
 Unresolved packages are never guessed and are never eligible for Star.

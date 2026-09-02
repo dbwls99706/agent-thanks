@@ -55,12 +55,13 @@ class ProjectScanner:
                 if baseline_identities is not None
                 else {item.identity for item in old_dependencies}
             )
+            old_names = {identity[:2] for identity in old_identities}
             for dependency in new_dependencies:
                 if dependency.identity in old_identities:
                     continue
-                repository = dependency.repository or self.resolver.resolve(
-                    dependency.ecosystem, dependency.name
-                )
+                repository = dependency.repository
+                if repository is None and dependency.from_registry:
+                    repository = self.resolver.resolve(dependency.ecosystem, dependency.name)
                 if repository is None:
                     unresolved.append(
                         UnresolvedDependency(
@@ -70,16 +71,22 @@ class ProjectScanner:
                         )
                     )
                     continue
+                if dependency.identity[:2] in old_names:
+                    detail = (
+                        f"Changed direct {dependency.ecosystem} dependency source: "
+                        f"{dependency.name}"
+                    )
+                else:
+                    detail = (
+                        f"Added direct {dependency.ecosystem} dependency: {dependency.name}"
+                    )
                 evidence_items.append(
                     (
                         repository,
                         Evidence(
                             kind="direct_dependency",
                             source=path,
-                            detail=(
-                                f"Added direct {dependency.ecosystem} dependency: "
-                                f"{dependency.name}"
-                            ),
+                            detail=detail,
                             confidence="high",
                             meaningful=True,
                         ),
@@ -117,11 +124,11 @@ class ProjectScanner:
             text=True,
         )
 
-    def _baseline_dependency_identities(self) -> set[tuple[str, str]] | None:
+    def _baseline_dependency_identities(self) -> set[tuple[str, str, str]] | None:
         if not self._is_git_repository() or not self._base_exists():
             return None
 
-        identities: set[tuple[str, str]] = set()
+        identities: set[tuple[str, str, str]] = set()
         paths = self._git(
             "ls-tree", "-r", "--name-only", self.base, "--"
         ).stdout.splitlines()

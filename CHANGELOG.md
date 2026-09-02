@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Restore repository detection for editable VCS requirements such as
+  `-e git+https://github.com/owner/repository.git#egg=name`, which 0.4.1 left
+  unresolved.
+- Never map a dependency through PyPI, npm, or crates.io when its manifest pins
+  a Git, URL, local path, workspace, or alternative-registry source. Such
+  dependencies count only when the pinned source itself names a GitHub
+  repository and are otherwise reported as unresolved.
+- Ignore local path requirements such as `vendor/pkg` instead of reading them
+  as GitHub `owner/repository` shorthand.
+- Treat an existing dependency that is repinned to a different repository
+  source as new use of that repository, with evidence that names the source
+  change.
+- Validate evidence confidence and meaningful-use fields when reading a report,
+  and report malformed JSON reports as errors instead of a traceback.
+
 ## 0.4.1 - 2026-09-02
 
 - Match high-confidence session evidence to the exact repository targeted by a

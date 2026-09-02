@@ -80,6 +80,97 @@ rich = { git = "https://github.com/Textualize/rich.git" }
         self.assertEqual(len(dependencies), 1)
         self.assertEqual(dependencies[0].repository, "acme/demo")
 
+    def test_editable_vcs_requirements_keep_their_repository(self) -> None:
+        dependencies = parse_manifest(
+            "requirements.txt",
+            "-e git+https://github.com/acme/fork.git#egg=fork\n"
+            "--editable git+ssh://git@github.com/acme/tool.git#egg=tool\n"
+            "--editable=git+https://github.com/acme/lib.git@v2#egg=lib\n"
+            "-egit+https://github.com/acme/attached.git#egg=attached\n"
+            "-e .\n"
+            "-e ./vendor/local[dev]\n",
+        )
+        by_name = {item.name: item for item in dependencies}
+        self.assertEqual(set(by_name), {"fork", "tool", "lib", "attached"})
+        self.assertEqual(by_name["fork"].repository, "acme/fork")
+        self.assertEqual(by_name["tool"].repository, "acme/tool")
+        self.assertEqual(by_name["lib"].repository, "acme/lib")
+        self.assertEqual(by_name["attached"].repository, "acme/attached")
+        self.assertFalse(any(item.from_registry for item in dependencies))
+
+    def test_pinned_requirement_sources_are_not_registry_packages(self) -> None:
+        dependencies = parse_manifest(
+            "requirements.txt",
+            "requests>=2\n"
+            "custom[extra] @ git+https://github.com/acme/custom.git\n"
+            "git+https://gitlab.com/acme/private.git#egg=private\n"
+            "https://github.com/acme/archive/archive/main.zip\n",
+        )
+        by_name = {item.name: item for item in dependencies}
+        self.assertTrue(by_name["requests"].from_registry)
+        self.assertFalse(by_name["custom"].from_registry)
+        self.assertEqual(by_name["custom"].repository, "acme/custom")
+        self.assertFalse(by_name["private"].from_registry)
+        self.assertIsNone(by_name["private"].repository)
+        self.assertFalse(by_name["acme/archive"].from_registry)
+        self.assertEqual(by_name["acme/archive"].repository, "acme/archive")
+
+    def test_local_and_url_specs_skip_registry_lookup(self) -> None:
+        npm = parse_manifest(
+            "package.json",
+            '{"dependencies":{"shared":"file:../shared","left-pad":"^1"}}',
+        )
+        by_name = {item.name: item for item in npm}
+        self.assertFalse(by_name["shared"].from_registry)
+        self.assertTrue(by_name["left-pad"].from_registry)
+
+        cargo = parse_manifest(
+            "Cargo.toml",
+            '[dependencies]\ncore = { path = "../core" }\nserde = "1"\n',
+        )
+        by_name = {item.name: item for item in cargo}
+        self.assertFalse(by_name["core"].from_registry)
+        self.assertTrue(by_name["serde"].from_registry)
+
+        poetry = parse_manifest(
+            "pyproject.toml",
+            '[tool.poetry.dependencies]\nhelper = { path = "../helper" }\nrich = "^13"\n',
+        )
+        by_name = {item.name: item for item in poetry}
+        self.assertFalse(by_name["helper"].from_registry)
+        self.assertTrue(by_name["rich"].from_registry)
+
+    def test_pip_option_lines_are_ignored(self) -> None:
+        dependencies = parse_manifest(
+            "requirements.txt",
+            "--index-url https://pypi.example.com/simple\n"
+            "--extra-index-url https://github.com/acme/index/simple\n"
+            "-i https://mirror.example.com/simple\n"
+            "-f https://github.com/acme/wheels/releases\n"
+            "--find-links=https://example.com/links\n"
+            "--trusted-host mirror.example.com\n"
+            "-r other.txt\n"
+            "-c constraints.txt\n"
+            "requests>=2\n",
+        )
+        self.assertEqual([item.name for item in dependencies], ["requests"])
+
+    def test_local_path_requirements_are_not_github_shorthand(self) -> None:
+        for line in ("vendor/pkg", "vendor/pkg[extra]", "./vendor/pkg", "../shared", "/opt/pkg", "~/pkg"):
+            with self.subTest(line=line):
+                self.assertEqual(parse_manifest("requirements.txt", line + "\n"), [])
+
+        npm = parse_manifest("package.json", '{"dependencies":{"tool":"owner/tool"}}')
+        self.assertEqual(npm[0].repository, "owner/tool")
+
+    def test_identity_distinguishes_pinned_repository_sources(self) -> None:
+        registry, pinned = parse_manifest(
+            "requirements.txt",
+            "fork-lib>=1\nfork_lib @ git+https://github.com/someone/fork-lib.git\n",
+        )
+        self.assertEqual(registry.identity[:2], pinned.identity[:2])
+        self.assertNotEqual(registry.identity, pinned.identity)
+
     def test_malformed_gitmodules_is_reported_as_a_parse_error(self) -> None:
         with self.assertRaisesRegex(ValueError, "invalid .gitmodules"):
             parse_manifest(".gitmodules", '[submodule "broken"\nurl = nope\n')
