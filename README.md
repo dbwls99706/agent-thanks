@@ -529,7 +529,7 @@ prefixes but should still be reviewed before publication.
 
 ## `ATTRIBUTION.md`
 
-Discovery of the draft `ATTRIBUTION.md` v0.1 protocol is on the roadmap; v0.4.2
+Discovery of the draft `ATTRIBUTION.md` v0.1 protocol is on the roadmap; v0.5.0
 does not parse that file. Its `mode: suggest` consent boundary already matches
 this release's behavior: every live Star is presented as a repository-specific
 human decision.
