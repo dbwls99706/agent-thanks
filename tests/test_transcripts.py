@@ -896,6 +896,45 @@ class ToolResultTests(unittest.TestCase):
         self.assertEqual(evidence["fetched/page"].confidence, "low")
         self.assertEqual(evidence["allowlisted/tool"].confidence, "high")
 
+class UnresolvablePathTests(unittest.TestCase):
+    """A path no operating system accepts has no comparable spelling, on every platform."""
+
+    BAD = "/work/" + chr(0) + "project"
+
+    def test_null_characters_are_rejected_under_either_platform_behaviour(self) -> None:
+        import ntpath
+        import posixpath
+        from unittest import mock
+
+        from agent_thanks import transcripts as module
+
+        # POSIX raises ValueError for an embedded null; Windows (gh-106242)
+        # returns the path unchanged. Neither may yield a comparable spelling.
+        for label, implementation in (("posix", posixpath.realpath), ("windows", ntpath.realpath)):
+            with self.subTest(platform=label):
+                with mock.patch.object(module.os.path, "realpath", implementation):
+                    self.assertIsNone(module._normalize_path(self.BAD))
+                    self.assertFalse(same_path(self.BAD, self.BAD))
+                    self.assertFalse(same_path(self.BAD, "/work"))
+
+    def test_a_resolvable_directory_still_normalizes(self) -> None:
+        from agent_thanks import transcripts as module
+
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertIsNotNone(module._normalize_path(directory))
+            self.assertTrue(same_path(directory, directory))
+
+    def test_a_transcript_recording_an_unresolvable_directory_has_no_identity(self) -> None:
+        from agent_thanks.transcripts import transcript_identity
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "t.jsonl"
+            write_jsonl(path, [{"type": "session_meta", "payload": {"id": "s", "cwd": self.BAD}}])
+            self.assertIsNone(transcript_identity(path))
+            write_jsonl(path, [{"type": "session_meta", "payload": {"id": "s", "cwd": directory}}])
+            self.assertIsNotNone(transcript_identity(path))
+
+
 class TranscriptLocationTests(unittest.TestCase):
     def test_project_path_encoding_matches_agent_layout(self) -> None:
         self.assertEqual(encode_project_path("/home/user/agent-thanks"), "-home-user-agent-thanks")

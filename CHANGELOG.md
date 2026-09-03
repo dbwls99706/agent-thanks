@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Treat a project directory the platform cannot resolve as identifying nothing.
+  A transcript whose recorded directory holds an embedded null byte no longer
+  ends the scan with an error, and it never merges with another file recording
+  the same malformed directory, so one file's recorded success can never speak
+  for a command in another. This holds on every platform: POSIX and Windows
+  disagree about such paths, so they are refused before either is consulted.
 - Ship `examples/session.jsonl` in the source distribution again. The packaging
   list still named the `examples/*.log` file that 0.5.0 replaced, so source
   distributions carried no example at all; a release check now fails when the

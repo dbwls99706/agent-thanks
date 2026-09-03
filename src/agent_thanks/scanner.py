@@ -126,11 +126,12 @@ class ProjectScanner:
         # session id and project directory, or a hook log's session id together with
         # the project it was written under. Files without an identity are judged alone.
         root_key = _normalize_path(str(self.root))
-        log_identity = {
-            path: (identity, root_key)
-            for _, path in hook_logs
-            if (identity := hook_log_identity(path)) is not None
-        }
+        log_identity: dict[Path, tuple[str, str]] = {}
+        if root_key is not None:
+            for _, path in hook_logs:
+                identity = hook_log_identity(path)
+                if identity is not None:
+                    log_identity[path] = (identity, root_key)
         transcript_identity_of = {
             path: identity for _, path in transcripts if (identity := transcript_identity(path)) is not None
         }
