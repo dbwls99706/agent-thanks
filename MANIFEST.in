@@ -6,4 +6,4 @@ include README.md
 include SECURITY.md
 include SUPPORT.md
 recursive-include docs *.md *.png *.svg
-recursive-include examples *.log
+recursive-include examples *.jsonl
