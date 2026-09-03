@@ -594,18 +594,27 @@ def _open_private(path: Path, flags: int) -> int:
     if existing is not None and not stat.S_ISREG(existing.st_mode):
         raise RuntimeError(f"Refusing to open {path}: not a regular file")
     no_follow = getattr(os, "O_NOFOLLOW", 0)
-    parent_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | no_follow | getattr(os, "O_CLOEXEC", 0)
-    parent = os.open(path.parent, parent_flags)
-    try:
-        if not stat.S_ISDIR(os.fstat(parent).st_mode):
-            raise RuntimeError(f"Refusing to open {path}: parent is not a directory")
-        file_flags = flags | no_follow | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
-        if os.open in os.supports_dir_fd:
+    file_flags = (
+        flags
+        | no_follow
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOINHERIT", 0)
+    )
+    if os.open in os.supports_dir_fd:
+        parent_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | no_follow | getattr(os, "O_CLOEXEC", 0)
+        parent = os.open(path.parent, parent_flags)
+        try:
+            if not stat.S_ISDIR(os.fstat(parent).st_mode):
+                raise RuntimeError(f"Refusing to open {path}: parent is not a directory")
             descriptor = os.open(path.name, file_flags, 0o600, dir_fd=parent)
-        else:  # pragma: no cover - platforms without dir_fd
-            descriptor = os.open(path, file_flags, 0o600)
-    finally:
-        os.close(parent)
+        finally:
+            os.close(parent)
+    else:
+        # Windows does not support dir_fd and rejects os.open() on a directory.
+        # The pre-open lstat and post-open fstat checks still reject special
+        # files on platforms without the relative-open API.
+        descriptor = os.open(path, file_flags, 0o600)
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise RuntimeError(f"Refusing to use {path}: not a regular file")

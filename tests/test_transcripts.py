@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -1002,6 +1003,15 @@ class TranscriptLocationTests(unittest.TestCase):
         self.assertTrue(same_path("/work/project/", Path("/work/project")))
         self.assertFalse(same_path("/work/project-other", Path("/work/proj")))
         self.assertFalse(same_path("/work/proj", Path("/work/project-other")))
+
+    @unittest.skipIf(os.name == "nt", "POSIX symbolic links")
+    def test_path_comparison_resolves_filesystem_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "real"
+            root.mkdir()
+            alias = Path(directory) / "alias"
+            alias.symlink_to(root, target_is_directory=True)
+            self.assertTrue(same_path(str(alias), root))
 
     def test_agent_home_overrides_are_honored(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
