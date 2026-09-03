@@ -28,8 +28,8 @@ def run(argv: list[str]) -> tuple[int, str]:
     return status, stdout.getvalue()
 
 
-def write_transcript(path: Path, command: str, *, is_error: bool = False) -> None:
-    records = [
+def write_transcript(path: Path, command: str, *, is_error: bool = False, cwd: str | None = None) -> None:
+    records: list[dict] = [
         {"type": "user", "message": {"role": "user", "content": "please"}},
         {
             "type": "assistant",
@@ -46,6 +46,9 @@ def write_transcript(path: Path, command: str, *, is_error: bool = False) -> Non
             },
         },
     ]
+    if cwd is not None:
+        for record in records:
+            record["cwd"] = cwd  # Claude Code records the project directory on every line
     path.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
 
 
@@ -573,6 +576,30 @@ class HookContractTests(IsolatedEnvironmentTestCase):
             self.assertTrue(all(e["confidence"] == "low" for e in candidate["evidence"]))
 
 
+    @unittest.skipIf(os.name == "nt", "POSIX permission bits")
+    def test_state_files_are_private_even_under_a_permissive_umask(self) -> None:
+        import stat
+
+        previous = os.umask(0o022)
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                state = Path(directory) / ".agent-thanks"
+                state.mkdir()
+                os.chmod(state, 0o755)  # an old, permissive state directory gets tightened
+                record = {"cwd": directory, "session_id": "p", "hook_event_name": "PostToolUse", "tool_use_id": "t1",
+                          "tool_name": "Bash", "tool_input": {"command": "git clone https://github.com/private/log"}}
+                self.assertEqual(run(["hook", "record", "--from", "claude-code", json.dumps(record)]), (0, ""))
+                run(["hook", "stop", "--from", "claude-code", "--offline", json.dumps({"cwd": directory, "session_id": "p"})])
+                mode = lambda path: stat.S_IMODE(path.stat().st_mode)  # noqa: E731
+                for folder in (state, state / "sessions", state / "reports"):
+                    self.assertEqual(mode(folder), 0o700, folder)
+                for file in [*(state / "sessions").iterdir(), *(state / "reports").iterdir(),
+                             state / "report.json", state / "announced.json"]:
+                    self.assertEqual(mode(file), 0o600, file)
+        finally:
+            os.umask(previous)
+
+
 class CodexNotifyTests(IsolatedEnvironmentTestCase):
     def codex_rollout(self, directory: Path, cwd: str, command: str, thread: str = "thread-1") -> Path:
         sessions = directory / "sessions" / "2026" / "09" / "02"
@@ -717,7 +744,7 @@ class FromAgentTests(IsolatedEnvironmentTestCase):
 
             transcripts = home / ".claude" / "projects" / encode_project_path(project.resolve())
             transcripts.mkdir(parents=True)
-            write_transcript(transcripts / "s.jsonl", "git clone https://github.com/located/repo")
+            write_transcript(transcripts / "s.jsonl", "git clone https://github.com/located/repo", cwd=str(project.resolve()))
 
             with mock.patch.object(Path, "home", return_value=home):
                 status, output = run(["scan", "--repo", str(project), "--from", "claude-code", "--offline", "--output", "-"])

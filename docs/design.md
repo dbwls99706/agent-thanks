@@ -127,22 +127,25 @@ also present; without a failure signal only an exact success signal makes it
 `ok`; everything else, including a result with no signal at all, is `unknown`.
 Success signals are read only from the structured field each agent writes, and
 only in the position that agent writes it. A Claude Code `tool_result` counts
-only inside a user-role message, paired with a `tool_use` call, and only its
-`is_error` equal to `false` is a success. A Codex output item counts only
-without a role, paired with a Codex call record (`function_call` or
-`custom_tool_call`) of one of Codex's own shell tools (`shell`,
-`exec_command`), and only an exit code of 0 is a success: in a result object,
-in the JSON-encoded envelope, or in the header block that precedes the
-`Output:` marker (`Exit code: 0` or `Process exited with code 0`, with every
-header line a header field). A Gemini `functionResponse` counts only inside a
-user-role message paired with a `functionCall`, and Gemini defines no success
-signal. A result anywhere else, or paired with a call of another kind, keeps
-its failure signals but never yields a success; so does a success recorded
-before the call it names, a result in a record whose outer type and inner
-message role disagree, and a result object that carries any contradictory
-field, because every `is_error`, exit code, `error`, `status`, and `isError`
-at the top level and inside `metadata` or `data` is collected before a single
-success is accepted. A call id that the transcript
+only inside a user-role message, paired with a `tool_use` call of Claude Code's
+own `Bash` tool, and only its top-level `is_error` equal to `false` is a
+success. A Codex output item counts only without a role, paired with a Codex
+call record (`function_call` or `custom_tool_call`) of one of Codex's own shell
+tools (`shell`, `exec_command`), and only an `exit_code` of 0 at the top level
+or under `metadata` is a success: in a result object, in the JSON-encoded
+envelope, or as the exit code in the header block that precedes the `Output:`
+marker (`Exit code: 0` or `Process exited with code 0`, with every header line
+a header field). A Gemini `functionResponse` counts only inside a user-role
+message paired with a `functionCall`, and Gemini defines no success signal. A
+result anywhere else, or paired with a call of another kind or tool, keeps its
+failure signals but never yields a success; so does a success recorded before
+the call it names and a result in a record whose outer type and inner message
+role disagree. Failure signals, by contrast, are collected from the whole
+envelope at any depth: every `is_error` or `isError` that is true or of an
+unexpected type, every exit code field that is non-zero or not an integer,
+every non-empty `error`, every failure `status` or status of an unexpected
+type, and every non-zero "Exit code" text, nested JSON strings included, so one
+contradictory or malformed field anywhere blocks the success. A call id that the transcript
 reuses for different calls attributes no result to any of them, and a
 transcript with an unparsable line is corrupted: its commands stay references
 whatever its results say, while a hook log scanned with it stands on its own
@@ -162,7 +165,9 @@ results, transcripts that record no results at all, multi-line invocations,
 and calls to any other tool contribute references only; the evidence detail
 names the reason. In the agent's prose only a line-initial provenance
 statement counts as use. Tool output, user prompts, and hidden reasoning are
-never treated as actions.
+never treated as actions. Prose counts only at a message position whose role is
+on the assistant side; text under a user, system, or developer role, under a
+conflicting role, or nested deeper than the message content is a reference.
 
 ## Promotion gate
 
@@ -189,10 +194,12 @@ leave the command a reference:
    sides (`canonical_command`, `_command_outcome`, `scan_hook_log_evidence`,
    `combine_hook_entries`).
 4. A single logical line (`scan_session_evidence` with `single_statement`).
-5. An allowed result envelope with an exact success signal and no
-   contradictory field anywhere inside it (`result_status`,
-   `_structured_signals`); provenance phrases never count inside a command
-   (`scan_session_evidence` with `provenance` off).
+5. An allowed result envelope with the agent's success field at its fixed
+   position and no contradictory or malformed field anywhere inside it
+   (`result_status`, `_agent_success`, `_failure_signals`); provenance
+   phrases never count inside a command (`scan_session_evidence` with
+   `provenance` off) and count in prose only at an assistant-role message
+   position (`iter_transcript_records`).
 6. A shell structure that lets the recorded result be attributed to the
    repository command: a single command or a pure `&&` chain of trivially safe
    segments, without `env` assignments, `set`, `export`, `printf`, or variable
@@ -209,6 +216,10 @@ without one is scoped by its transcript path, and a payload with neither is
 not recorded and never announced, because its commands could not be kept apart
 from another session's. Scopes become file names through a sanitized prefix
 plus a hash of the whole scope, so no two scopes share a file.
+
+The state directory and every file in it are created readable by their owner
+only and tightened on each run, because the hook log keeps the raw text of every
+shell command, secrets included, for 30 days.
 
 Transcript lookups for `--from` return a file only when the project directory
 it records equals the current directory after normalization, and, when the

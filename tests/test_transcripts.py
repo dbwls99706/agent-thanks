@@ -424,6 +424,63 @@ class ResultStatusTests(unittest.TestCase):
         self.assertEqual(evidence["placed/assistant-failure"].confidence, "low")
         self.assertIn("failed", evidence["placed/assistant-failure"].detail)
 
+    def test_provenance_counts_only_in_assistant_prose_at_a_message_position(self) -> None:
+        phrase = "Adapted from https://github.com/prose/{name}"
+        records = [
+            {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": phrase.format(name="assistant")}]}},
+            {"type": "user", "message": {"role": "assistant", "content": [{"type": "text", "text": phrase.format(name="conflict")}]}},
+            {"type": "developer", "message": {"role": "developer", "content": [{"type": "text", "text": phrase.format(name="developer")}]}},
+            {"type": "system", "message": {"role": "system", "content": [{"type": "text", "text": phrase.format(name="system")}]}},
+            {"note": {"type": "text", "text": phrase.format(name="roleless")}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "working"}]},
+             "extra": {"deep": {"type": "text", "text": phrase.format(name="nested")}}},
+            {"type": "response_item", "payload": {"type": "message", "role": "assistant",
+                                                  "content": [{"type": "output_text", "text": phrase.format(name="codex")}]}},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "t.jsonl"
+            write_jsonl(path, records)
+            evidence = evidence_by_repository(scan_transcript_evidence(path, "t.jsonl"))
+        self.assertEqual(evidence["prose/assistant"].confidence, "high")
+        self.assertEqual(evidence["prose/codex"].confidence, "high")
+        for name in ("conflict", "developer", "roleless", "nested"):
+            self.assertEqual(evidence[f"prose/{name}"].confidence, "low", name)
+            self.assertIn("referenced", evidence[f"prose/{name}"].detail, name)
+        self.assertNotIn("prose/system", evidence)
+
+    def test_success_fields_count_only_at_their_agents_fixed_position(self) -> None:
+        self.assertEqual(result_status({"data": {"exit_code": 0}}, agent="codex"), RESULT_UNKNOWN)
+        self.assertEqual(result_status({"details": {"metadata": {"exit_code": 0}}}, agent="codex"), RESULT_UNKNOWN)
+        self.assertEqual(result_status({"metadata": {"is_error": False}}, agent="claude-code"), RESULT_UNKNOWN)
+        self.assertEqual(result_status({"metadata": {"exit_code": 0}}, agent="claude-code"), RESULT_UNKNOWN)
+        self.assertEqual(result_status({"returncode": 0}, agent="codex"), RESULT_UNKNOWN)
+        self.assertEqual(result_status({"metadata": {"exit_code": 0}}, agent="codex"), RESULT_OK)
+        # Malformed or misplaced failure fields block success instead of being ignored.
+        self.assertEqual(result_status({"exit_code": 0, "isError": "true"}, agent="codex"), RESULT_ERROR)
+        self.assertEqual(result_status({"exit_code": 0, "isError": "false"}, agent="codex"), RESULT_ERROR)
+        self.assertEqual(result_status({"exit_code": 0, "details": {"error": "boom"}}, agent="codex"), RESULT_ERROR)
+        self.assertEqual(result_status({"exit_code": 0, "nested": [{"deep": {"is_error": True}}]}, agent="codex"), RESULT_ERROR)
+        self.assertEqual(result_status({"exit_code": "0"}, agent="codex"), RESULT_ERROR)
+        self.assertEqual(result_status({"exit_code": 0, "status": 1}, agent="codex"), RESULT_ERROR)
+        self.assertEqual(result_status({"exit_code": 0, "output": json.dumps({"error": "inner"})}, agent="codex"), RESULT_ERROR)
+        self.assertEqual(result_status({"is_error": False, "extra": {"exitCode": 2}}, agent="claude-code"), RESULT_ERROR)
+        self.assertEqual(result_status({"exit_code": 0, "metadata": {"exit_code": 0, "duration_seconds": 0.2}}, agent="codex"), RESULT_OK)
+
+    def test_claude_results_count_only_for_the_bash_tool(self) -> None:
+        records = []
+        for index, tool in enumerate(("Bash", "shell", "exec_command", "run_shell_command")):
+            records.append({"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": f"t{index}", "name": tool, "input": {"command": f"git clone https://github.com/tools/{tool.lower()}"}}]}})
+            records.append({"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": f"t{index}", "is_error": False, "content": "Cloning..."}]}})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "t.jsonl"
+            write_jsonl(path, records)
+            evidence = evidence_by_repository(scan_transcript_evidence(path, "t.jsonl"))
+        self.assertEqual(evidence["tools/bash"].confidence, "high")
+        for tool in ("shell", "exec_command", "run_shell_command"):
+            self.assertEqual(evidence[f"tools/{tool}"].confidence, "low", tool)
+
     def test_a_success_recorded_before_its_call_proves_nothing(self) -> None:
         call = {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "git clone https://github.com/order/{name}"}}
         ok = {"type": "tool_result", "tool_use_id": "t1", "is_error": False, "content": "Cloning..."}
@@ -761,8 +818,8 @@ class TranscriptLocationTests(unittest.TestCase):
             project_dir.mkdir(parents=True)
             older = project_dir / "older.jsonl"
             newer = project_dir / "newer.jsonl"
-            older.write_text("{}\n", encoding="utf-8")
-            newer.write_text("{}\n", encoding="utf-8")
+            older.write_text(json.dumps({"cwd": "/work/project", "sessionId": "older"}) + "\n", encoding="utf-8")
+            newer.write_text(json.dumps({"cwd": "/work/project", "sessionId": "newer"}) + "\n", encoding="utf-8")
             import os
 
             os.utime(older, (1, 1))
@@ -811,11 +868,37 @@ class TranscriptLocationTests(unittest.TestCase):
             thread_a = rollout("thread-A", "/work/proj", "thread-A", 5)
             thread_b = rollout("thread-B", "/work/proj/", "thread-B", 7)
 
+            # A file name that ends in the session id never stands in for the recorded identifier.
+            rollout("mismatch-thread-C", "/work/proj", "thread-D", 3)
+            rollout("thread-E", "/work/proj", "", 4)
+
             self.assertIsNone(locate_transcript("codex", Path("/work/proj"), home, {}, session_id="thread-none"))
             self.assertEqual(locate_transcript("codex", Path("/work/proj"), home, {}, session_id="thread-A"), thread_a)
             self.assertEqual(locate_transcript("codex", Path("/work/proj"), home, {}), thread_b)
+            self.assertIsNone(locate_transcript("codex", Path("/work/proj"), home, {}, session_id="thread-C"))
+            self.assertIsNone(locate_transcript("codex", Path("/work/proj"), home, {}, session_id="thread-E"))
             self.assertIsNone(locate_transcript("codex", Path("/work/pro"), home, {}))
             self.assertEqual(locate_transcript("codex", Path("/work/project-other"), home, {}), other)
+
+    def test_claude_lookup_verifies_the_recorded_project_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            # Both project paths encode to the same folder name.
+            folder = home / ".claude" / "projects" / encode_project_path("/a-b/c")
+            self.assertEqual(folder, home / ".claude" / "projects" / encode_project_path("/a/b-c"))
+            folder.mkdir(parents=True)
+            write_jsonl(folder / "one.jsonl", [{"type": "user", "cwd": "/a/b-c", "session_id": "one", "message": {"role": "user", "content": "hi"}}])
+            write_jsonl(folder / "two.jsonl", [{"type": "user", "cwd": "/a-b/c", "session_id": "two", "message": {"role": "user", "content": "hi"}}])
+            write_jsonl(folder / "bare.jsonl", [{"type": "user", "message": {"role": "user", "content": "no cwd recorded"}}])
+            import os
+
+            for index, name in enumerate(("one", "two", "bare"), start=1):
+                os.utime(folder / f"{name}.jsonl", (index, index))
+            self.assertEqual(locate_transcript("claude-code", Path("/a-b/c"), home, {}), folder / "two.jsonl")
+            self.assertEqual(locate_transcript("claude-code", Path("/a/b-c"), home, {}), folder / "one.jsonl")
+            self.assertEqual(locate_transcript("claude-code", Path("/a-b/c"), home, {}, session_id="two"), folder / "two.jsonl")
+            self.assertIsNone(locate_transcript("claude-code", Path("/a-b/c"), home, {}, session_id="one"))
+            self.assertIsNone(locate_transcript("claude-code", Path("/a-b/c"), home, {}, session_id="bare"))
 
     def test_metadata_and_path_comparison(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -839,7 +922,7 @@ class TranscriptLocationTests(unittest.TestCase):
             (codex_home / "sessions").mkdir(parents=True)
             (codex_home / "sessions" / "rollout-1.jsonl").write_text(json.dumps({"cwd": "/work/project"}) + "\n", encoding="utf-8")
             (claude_dir / "projects" / "-work-project").mkdir(parents=True)
-            (claude_dir / "projects" / "-work-project" / "s.jsonl").write_text("{}\n", encoding="utf-8")
+            (claude_dir / "projects" / "-work-project" / "s.jsonl").write_text(json.dumps({"cwd": "/work/project"}) + "\n", encoding="utf-8")
             environ = {"CODEX_HOME": str(codex_home), "CLAUDE_CONFIG_DIR": str(claude_dir)}
             self.assertEqual(locate_transcript("codex", cwd, home, environ), codex_home / "sessions" / "rollout-1.jsonl")
             self.assertEqual(locate_transcript("claude-code", cwd, home, environ), claude_dir / "projects" / "-work-project" / "s.jsonl")

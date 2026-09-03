@@ -128,6 +128,8 @@ result (every Gemini CLI turn, until Gemini records an explicit success; with
 entry and the transcript disagree about the command behind one tool call, when
 the payload carries neither a session identifier nor a transcript path, when
 the transcript path is missing and `--from` cannot find a
+transcript that records both the project directory and the session identifier
+exactly (a file name alone is not enough), or when `--from` cannot find a
 transcript whose recorded directory and session match, or when `agent-thanks`
 is not on `PATH` for the agent's shell. Only
 known shell tools count as commands; other tools contribute references. Hook
@@ -153,6 +155,15 @@ exist. Old configuration files are ignored and do not need to be removed.
 Successful Stars are not hidden or rolled back automatically. The CLI prints an
 Undo command containing the completed subset before returning a non-zero exit
 code. Run that command if the batch should be reverted.
+
+## Hook logs keep raw commands
+
+`.agent-thanks/sessions` stores the exact text of every shell command the agent
+ran, for 30 days, so that later turns can be judged; a command such as
+`TOKEN=... curl ...` lands there verbatim. The directory and its files are
+created readable by their owner only and tightened on every run. Delete the
+directory whenever you want to drop the history, or remove the hook to stop
+recording.
 
 ## The report contains a local path
 

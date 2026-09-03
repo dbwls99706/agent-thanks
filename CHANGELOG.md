@@ -24,10 +24,12 @@ All notable changes to this project will be documented in this file.
   results. Success is read only from the structured field each agent writes,
   in the position it writes it (a Claude Code `tool_result` inside a user
   message, a Codex output item paired with a Codex call record of its own
-  `shell` or `exec_command` tool; Gemini has none), only after the call it
-  names, only when the record's outer type and inner role agree, and only
-  when no field anywhere in the envelope contradicts it, never from program
+  `shell` or `exec_command` tool; Gemini has none), only for the agent's own
+  shell tool (`Bash` for Claude Code), only after the call it names, only when
+  the record's outer type and inner role agree, and only when no contradictory
+  or malformed field anywhere in the envelope blocks it, never from program
   output or bare text; a transcript with an unparsable line promotes nothing;
+  provenance prose counts only at an assistant-role message position;
   several
   results for one call combine failure first; a call id reused for different
   calls, or a call found outside a recognized tool call position, attributes
@@ -47,8 +49,12 @@ All notable changes to this project will be documented in this file.
   transcript whose classification matches `agent-thanks demo`.
 - Add `--from claude-code|codex|gemini` to `scan`, `run`, and `hook stop` to
   locate the transcript whose recorded project directory equals the current
-  one and whose session identifier matches the hook payload, honoring
-  `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, and to fail rather than guess.
+  one and whose recorded session identifier matches the hook payload exactly,
+  never by file name alone, honoring `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, and
+  to fail rather than guess.
+- Create the `.agent-thanks` state directory and its files readable by their
+  owner only, tightening existing ones, because hook logs keep raw shell
+  commands.
 - Add `agent-thanks hook record` and `agent-thanks hook stop`, detection-only
   entry points for agent hooks. `record` keeps a structured per-session log
   with each command's recorded status and basis, treating the Claude Code

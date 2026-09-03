@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -549,12 +550,33 @@ def _hook_root(payload: dict[str, object]) -> Path:
 
 
 def _state_directory(root: Path) -> Path:
-    state = root / STATE_DIRECTORY
-    state.mkdir(exist_ok=True)
+    state = _private_directory(root / STATE_DIRECTORY)
     ignore = state / ".gitignore"
     if not ignore.exists():
         ignore.write_text("*\n", encoding="utf-8")
     return state
+
+
+def _private_directory(path: Path) -> Path:
+    """Create a state directory readable by its owner only, tightening an existing one."""
+    path.mkdir(exist_ok=True)
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        pass
+    return path
+
+
+def _private_write(path: Path, text: str, *, append: bool = False) -> None:
+    """Write a state file readable by its owner only; the log holds raw commands."""
+    flags = os.O_WRONLY | os.O_CREAT | (os.O_APPEND if append else os.O_TRUNC)
+    descriptor = os.open(path, flags, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
 
 
 def _session_id(payload: dict[str, object]) -> str | None:
@@ -590,17 +612,13 @@ def session_file_stem(scope: str) -> str:
 
 
 def _session_log(state: Path, scope: str) -> Path:
-    directory = state / "sessions"
-    directory.mkdir(exist_ok=True)
-    return directory / f"{session_file_stem(scope)}.jsonl"
+    return _private_directory(state / "sessions") / f"{session_file_stem(scope)}.jsonl"
 
 
 def _report_path(state: Path, scope: str | None) -> Path:
     if scope is None:
         return state / "report.json"
-    directory = state / "reports"
-    directory.mkdir(exist_ok=True)
-    return directory / f"{session_file_stem(scope)}.json"
+    return _private_directory(state / "reports") / f"{session_file_stem(scope)}.json"
 
 
 def _infer_agent(payload: dict[str, object]) -> str | None:
@@ -673,8 +691,7 @@ def _hook_record(payload: dict[str, object], *, agent: str | None) -> None:
     }
     state = _state_directory(_hook_root(payload))
     log = _session_log(state, scope)
-    with log.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    _private_write(log, json.dumps(entry, ensure_ascii=False) + "\n", append=True)
     return None
 
 
@@ -711,10 +728,10 @@ def _hook_stop(
     resolver = PackageRepositoryResolver(offline=offline)
     report = ProjectScanner(root, base="HEAD", resolver=resolver).scan(sources)
     report_path = _report_path(state, scope)
-    report.write(report_path)
+    _private_write(report_path, report.to_json())
     latest = state / "report.json"
     if report_path != latest:
-        report.write(latest)
+        _private_write(latest, report.to_json())
 
     if scope is None:
         return None  # without a scope, announcements could not be kept apart per session
@@ -729,9 +746,7 @@ def _hook_stop(
     if not fresh:
         return None
     announced[key] = sorted(seen | {item.casefold() for item in fresh})
-    (state / "announced.json").write_text(
-        json.dumps(announced, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    _private_write(state / "announced.json", json.dumps(announced, indent=2, sort_keys=True) + "\n")
     return {"systemMessage": _announcement(fresh, report_path, root)}
 
 

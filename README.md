@@ -258,7 +258,9 @@ ways, and neither interrupts the agent or changes a Star:
    writes for its own `shell` or `exec_command` tool; Gemini records no
    success signal) after the call and with no failure signal anywhere in the
    envelope, the record's outer type and inner role agree, the call id is used
-   for that call alone, the transcript has no unparsable line, the
+   for that call alone, the transcript has no unparsable line, the call names
+   the agent's own shell tool (`Bash` for Claude Code, `shell` or
+   `exec_command` for Codex), the
    call is a single logical line, and the statement is a single command or an
    `&&` chain whose other segments are trivially safe (`cd`, `mkdir`, `echo`,
    and similar). Program output and bare text can never supply a success
@@ -269,10 +271,12 @@ ways, and neither interrupts the agent or changes a Star:
    call to any other tool only ever produces references, and the evidence says
    which case applied. In the agent's prose,
    only a line-initial provenance statement such as
-   `Adapted from https://github.com/owner/repository` counts as use; every
-   other URL, including commands quoted in Markdown code fences, stays a
-   review-only reference. Tool output, your prompts, and hidden reasoning are
-   never treated as actions.
+   `Adapted from https://github.com/owner/repository` counts as use, and only
+   when the text sits at a message position whose role is the assistant's;
+   text under a user, system, or developer role, under a conflicting role, or
+   nested anywhere else is a review-only reference. Every other URL, including
+   commands quoted in Markdown code fences, stays a review-only reference. Tool
+   output, your prompts, and hidden reasoning are never treated as actions.
 2. **Hooks.** `agent-thanks hook record` appends every executed shell command
    to `.agent-thanks/sessions/<session>-<hash>.jsonl` as a structured entry with its
    recorded `status` (`ok`, `error`, or `unknown`) and the `basis` for it. A
@@ -305,7 +309,11 @@ ways, and neither interrupts the agent or changes a Star:
    through its own `.gitignore`. Hooks exit successfully even when something
    goes wrong, so they can never block the agent, and with `--from codex` or
    `--from gemini` they print `{}` whenever they have nothing to say, because
-   those agents parse a hook's standard output as JSON. Every supported hook
+   those agents parse a hook's standard output as JSON. The state directory
+   and its files are created readable by their owner only (`0700` and `0600`)
+   and tightened on every run, because the log keeps the raw text of every
+   shell command for 30 days, secrets included; delete `.agent-thanks/sessions`
+   at any time to drop it. Every supported hook
    contract carries a session or thread identifier, which scopes the log, the
    report, and the announcements; a payload without one is scoped by its
    transcript path, and without either nothing is recorded and nothing is
@@ -326,11 +334,13 @@ agent-thanks scan --from gemini
 | Codex CLI | `$CODEX_HOME/sessions/**/rollout-*.jsonl` (default `~/.codex`) | Newest file whose recorded directory equals the project |
 | Gemini CLI | `~/.gemini/tmp/**/*.json` | Newest file whose recorded directory equals the project |
 
-`CLAUDE_CONFIG_DIR` and `CODEX_HOME` are honored. Directories are compared
-exactly after normalization, never by substring, and a hook payload that
-carries a session or thread identifier must match the transcript's identifier
-too. A lookup that cannot confirm the project fails instead of guessing; pass
-the file with `--session` then.
+`CLAUDE_CONFIG_DIR` and `CODEX_HOME` are honored. Every candidate must record
+the project directory itself, and directories are compared exactly after
+normalization, never by substring or by the encoded folder name alone; a hook
+payload that carries a session or thread identifier must match the identifier
+the transcript records, and a file name never stands in for it. A lookup that
+cannot confirm the project fails instead of guessing; pass the file with
+`--session` then.
 
 ### Claude Code plugin
 

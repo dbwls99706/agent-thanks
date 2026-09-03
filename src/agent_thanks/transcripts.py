@@ -99,6 +99,8 @@ _HEADER_LINE_PATTERN = re.compile(
 )
 _MAX_DEPTH = 32
 CODEX_SHELL_TOOLS = frozenset({"shell", "exec_command"})
+CLAUDE_SHELL_TOOLS = frozenset({"Bash"})
+_MAX_SIGNAL_DEPTH = 6
 _CODEX_CALL_TYPES = frozenset({"function_call", "custom_tool_call"})
 _CODEX_OUTPUT_TYPES = frozenset({"function_call_output", "custom_tool_call_output"})
 HOOK_LOG_SCHEMA = "agent-thanks/hook-log/1"
@@ -229,7 +231,10 @@ def iter_transcript_records(
     calls, positions = _index_calls(transcript.records)
     results = _index_results(transcript.records, calls, positions)
     for number, record in transcript.records:
-        for kind, text, outcome in _walk(record, None, 0, calls, results, authoritative):
+        # Only text at an envelope position whose role is on the assistant side is
+        # agent prose; text anywhere else can only ever be a reference.
+        prose_nodes = {id(node) for node, role in _result_envelopes(record) if role in _ASSISTANT_ROLES}
+        for kind, text, outcome in _walk(record, None, 0, calls, results, authoritative, prose_nodes):
             if kind == "command" and transcript.corrupted:
                 outcome = OUTCOME_CORRUPTED
             if text.strip():
@@ -553,30 +558,28 @@ def locate_transcript(
     """Find the transcript an agent wrote for exactly this project and session, or None.
 
     A candidate counts only when the project directory it records equals ``cwd``
-    after normalization. When ``session_id`` is given, the transcript must also
-    record that identifier (or carry it in its file name). Nothing falls back
+    after normalization; a transcript that records no directory cannot be
+    confirmed and is skipped, for every agent. When ``session_id`` is given, the
+    transcript must record that identifier exactly (Claude Code names the file
+    after it and records it inside; Codex and Gemini record it inside); a file
+    name never stands in for missing or different metadata. Nothing falls back
     to "the newest file".
     """
     (directory,) = transcript_locations(agent, cwd, home, environ)
     if agent == "claude-code":
         candidates = _sorted_by_mtime(directory.glob("*.jsonl"))
         if session_id is not None:
-            return next((path for path in candidates if path.stem == session_id), None)
-        return candidates[0] if candidates else None
-
-    pattern = "*.jsonl" if agent == "codex" else "*.json"
-    candidates = _sorted_by_mtime(
-        path for path in directory.rglob(pattern) if path.name != "settings.json"
-    )
+            candidates = [path for path in candidates if path.stem == session_id]
+    else:
+        pattern = "*.jsonl" if agent == "codex" else "*.json"
+        candidates = _sorted_by_mtime(
+            path for path in directory.rglob(pattern) if path.name != "settings.json"
+        )
     for candidate in candidates[:200]:
         metadata = transcript_metadata(candidate)
         if metadata.cwd is None or not same_path(metadata.cwd, cwd):
             continue
-        if (
-            session_id is not None
-            and metadata.session_id != session_id
-            and not candidate.stem.endswith(session_id)
-        ):
+        if session_id is not None and metadata.session_id != session_id:
             continue
         return candidate
     return None
@@ -756,7 +759,14 @@ def _result_envelopes(record: Any) -> Iterator[tuple[dict[str, Any], str | None]
     yield record, role
     payload = record.get("payload")
     if isinstance(payload, dict):
-        yield payload, _role_of(payload, role)
+        payload_role = _role_of(payload, role)
+        yield payload, payload_role
+        # Codex message items carry their text in payload.content.
+        for container in (payload.get("content"), payload.get("parts")):
+            if isinstance(container, list):
+                for item in container:
+                    if isinstance(item, dict):
+                        yield item, payload_role
     message = record.get("message") if isinstance(record.get("message"), dict) else None
     # The message's own role governs its content; a record whose outer type and
     # inner role disagree yields the conflict role, which no result may use.
@@ -786,95 +796,94 @@ def _iter_dicts(node: Any, depth: int) -> Iterator[dict[str, Any]]:
 def result_status(value: Any, *, agent: str | None = None) -> str:
     """Judge a recorded tool result envelope with failure-first semantics.
 
-    Failure signals are accepted from anywhere: ``is_error`` true, a non-zero
-    exit code, a non-empty ``error``, a failure status, Gemini's ``data`` block
-    with ``isError`` or a non-zero ``exitCode``, and "Exit code: N" lines with N
-    != 0 inside program output. Success signals are accepted only from the
-    structured field the named agent actually writes: for ``claude-code`` an
-    ``is_error`` flag equal to ``False`` in a result object; for ``codex`` an
-    integer exit code of 0 in a result object (top level or under ``metadata``),
-    in a JSON-encoded envelope, or in the header block that precedes the
-    ``Output:`` marker. Gemini defines no success signal, and with no agent no
-    success is ever read. Program output and bare text never create a success
-    signal, so a program that prints a success message cannot fake one. Any
-    failure makes the result RESULT_ERROR; without a failure, an exact success
-    makes it RESULT_OK; otherwise RESULT_UNKNOWN.
+    Failure signals are collected from the whole envelope, at any depth and in
+    any field: ``is_error`` or ``isError`` that is true or of an unexpected type,
+    an exit code field that is non-zero or not an integer, a non-empty
+    ``error``, a failure ``status`` or a status of an unexpected type, and
+    "Exit code: N" text with N != 0, including inside nested JSON strings.
+    Success is read only from the fixed position the named agent writes: for
+    ``claude-code`` a top-level ``is_error`` equal to ``False``; for ``codex`` a
+    top-level or ``metadata`` ``exit_code`` equal to 0 in a result object or a
+    JSON-encoded envelope, or an exit code of 0 in the header block that
+    precedes the ``Output:`` marker. Gemini defines no success signal, and with
+    no agent no success is ever read. Any failure makes the result
+    RESULT_ERROR; without a failure, an exact success makes it RESULT_OK;
+    otherwise RESULT_UNKNOWN.
     """
-    failures, successes = _envelope_signals(value, 0, agent)
+    failures = _failure_signals(value, 0)
     if failures:
         return RESULT_ERROR
-    if successes:
-        return RESULT_OK
-    return RESULT_UNKNOWN
+    return RESULT_OK if _success_signal(value, agent) else RESULT_UNKNOWN
 
 
-def _envelope_signals(value: Any, depth: int, agent: str | None) -> tuple[int, int]:
-    failures = successes = 0
-    if depth > 4:
-        return failures, successes
+def _success_signal(value: Any, agent: str | None) -> bool:
     if isinstance(value, dict):
-        return _structured_signals(value, depth, agent)
-    if isinstance(value, str):
+        return _agent_success(value, agent)
+    if isinstance(value, str) and agent == "codex":
         stripped = value.strip()
-        if stripped.startswith("{"):
-            try:
-                parsed = json.loads(stripped)
-            except json.JSONDecodeError:
-                parsed = None
-            if isinstance(parsed, dict):
-                # A JSON-encoded envelope: only Codex writes one, and only for its shell tools.
-                return _structured_signals(parsed, depth, agent if agent == "codex" else None)
-        header, body = _split_text_envelope(stripped) if agent == "codex" else ("", stripped)
-        for match in _EXIT_CODE_PATTERN.finditer(header):
-            if int(match.group(1)) == 0:
-                successes += 1
-            else:
-                failures += 1
-        failures += _output_failures(body, depth + 1)
-        return failures, successes
-    return failures, successes
+        parsed = _parse_json_object(stripped)
+        if parsed is not None:
+            return _agent_success(parsed, agent)
+        header, _ = _split_text_envelope(stripped)
+        return any(int(match.group(1)) == 0 for match in _EXIT_CODE_PATTERN.finditer(header))
+    return False
 
 
-def _structured_signals(mapping: dict[str, Any], depth: int, agent: str | None) -> tuple[int, int]:
-    """Collect every signal in a result object and its structured sub-objects.
+def _agent_success(mapping: dict[str, Any], agent: str | None) -> bool:
+    """Read the one success field an agent writes, at the one position it writes it."""
+    if agent == "claude-code":
+        return mapping.get("is_error") is False
+    if agent == "codex":
+        metadata = mapping.get("metadata")
+        codes = [mapping.get("exit_code"), metadata.get("exit_code") if isinstance(metadata, dict) else None]
+        return any(isinstance(code, int) and not isinstance(code, bool) and code == 0 for code in codes)
+    return False
 
-    Every ``is_error`` flag, every exit code field, every ``error``, every
-    failure ``status``, and every Gemini ``isError`` is read, at the top level
-    and inside ``metadata`` and ``data`` blocks, so one contradictory field
-    anywhere in the envelope makes the result a failure. Success is read only
-    from the agent's own field. Program output fields contribute failures only.
-    """
-    failures = successes = 0
-    if depth > 4:
-        return failures, successes
-    if "is_error" in mapping:
-        flag = mapping["is_error"]
-        if flag is False:
-            if agent == "claude-code":
-                successes += 1
-        elif flag is True or (not isinstance(flag, bool) and bool(flag)):
-            failures += 1
-    if mapping.get("isError") is True:
-        failures += 1
-    for code in _exit_codes(mapping):
-        if code != 0:
-            failures += 1
-        elif agent == "codex":
-            successes += 1
-    if mapping.get("error"):
-        failures += 1
-    status = mapping.get("status")
-    if isinstance(status, str) and status.casefold() in _FAILURE_STATUSES:
-        failures += 1
-    for key in _STRUCTURED_KEYS:
-        nested = mapping.get(key)
-        if isinstance(nested, dict):
-            nested_failures, nested_successes = _structured_signals(nested, depth + 1, agent)
-            failures += nested_failures
-            successes += nested_successes
-    for key in _RESULT_TEXT_KEYS:
-        failures += _output_failures(mapping.get(key), depth + 1)
-    return failures, successes
+
+def _failure_signals(value: Any, depth: int) -> int:
+    """Count failure signals anywhere in a result, whatever the agent."""
+    if depth > _MAX_SIGNAL_DEPTH:
+        return 0
+    if isinstance(value, dict):
+        total = 0
+        for key in ("is_error", "isError"):
+            if key in value:
+                flag = value[key]
+                if flag is not False and flag is not None:
+                    total += 1  # true, or a type the contract never uses
+        for key in _EXIT_KEYS:
+            if key in value:
+                code = value[key]
+                if not isinstance(code, int) or isinstance(code, bool) or code != 0:
+                    total += 1
+        if value.get("error"):
+            total += 1
+        if "status" in value and value["status"] is not None:
+            status = value["status"]
+            if not isinstance(status, str) or status.casefold() in _FAILURE_STATUSES:
+                total += 1
+        for nested in value.values():
+            if isinstance(nested, (dict, list, str)):
+                total += _failure_signals(nested, depth + 1)
+        return total
+    if isinstance(value, list):
+        return sum(_failure_signals(item, depth + 1) for item in value)
+    if isinstance(value, str):
+        parsed = _parse_json_object(value.strip())
+        if parsed is not None:
+            return _failure_signals(parsed, depth + 1)
+        return sum(1 for match in _EXIT_CODE_PATTERN.finditer(value) if int(match.group(1)) != 0)
+    return 0
+
+
+def _parse_json_object(text: str) -> dict[str, Any] | None:
+    if not text.startswith("{"):
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _split_text_envelope(text: str) -> tuple[str, str]:
@@ -897,37 +906,6 @@ def _split_text_envelope(text: str) -> tuple[str, str]:
     return "", text
 
 
-def _exit_codes(mapping: dict[str, Any]) -> list[int]:
-    """Read every structured exit code field at this level of an envelope."""
-    codes: list[int] = []
-    for key in _EXIT_KEYS:
-        value = mapping.get(key)
-        if isinstance(value, int) and not isinstance(value, bool):
-            codes.append(value)
-    return codes
-
-
-def _output_failures(output: Any, depth: int) -> int:
-    """Count failure signals inside program output; output never yields success."""
-    if depth > 4:
-        return 0
-    if isinstance(output, str):
-        return sum(1 for match in _EXIT_CODE_PATTERN.finditer(output) if int(match.group(1)) != 0)
-    if isinstance(output, list):
-        return sum(_output_failures(item, depth + 1) for item in output)
-    if isinstance(output, dict):
-        total = sum(1 for code in _exit_codes(output) if code != 0)
-        if output.get("error") or output.get("is_error") is True or output.get("isError") is True:
-            total += 1
-        status = output.get("status")
-        if isinstance(status, str) and status.casefold() in _FAILURE_STATUSES:
-            total += 1
-        for key in (*_STRUCTURED_KEYS, *_RESULT_TEXT_KEYS):
-            total += _output_failures(output.get(key), depth + 1)
-        return total
-    return 0
-
-
 def _result_of(
     node: dict[str, Any], role: str | None, calls: Mapping[str, CallInfo | None]
 ) -> tuple[str, str] | None:
@@ -935,15 +913,17 @@ def _result_of(
 
     A result proves success only in the position its agent writes it: a Claude
     Code ``tool_result`` inside a user-role message paired with a ``tool_use``
-    call; a Codex output item without a role paired with a Codex call record of
-    a Codex shell tool; a Gemini ``functionResponse`` inside a user-role message
-    paired with a ``functionCall``. A result anywhere else, or paired with a call
-    of another kind, keeps its failure signals but never yields a success.
+    call of Claude Code's own ``Bash`` tool; a Codex output item without a role
+    paired with a Codex call record of a Codex shell tool; a Gemini
+    ``functionResponse`` inside a user-role message paired with a
+    ``functionCall``. A result anywhere else, or paired with a call of another
+    kind or tool, keeps its failure signals but never yields a success.
     """
     node_type = node.get("type")
     if node_type == "tool_result" and isinstance(node.get("tool_use_id"), str):
         call_id = node["tool_use_id"]
-        placed = role == "user" and _call_kind_is(calls.get(call_id), {"tool_use"})
+        info = calls.get(call_id)
+        placed = role == "user" and _call_kind_is(info, {"tool_use"}) and info.tool in CLAUDE_SHELL_TOOLS
         return call_id, result_status(node, agent="claude-code" if placed else None)
     if node_type in _CODEX_OUTPUT_TYPES and isinstance(node.get("call_id"), str):
         call_id = node["call_id"]
@@ -969,13 +949,14 @@ def _walk(
     calls: Mapping[str, CallInfo | None],
     results: dict[str, str],
     authoritative: Mapping[str, HookStatus] | None,
+    prose_nodes: frozenset[int] | set[int],
 ) -> list[tuple[str, str, str | None]]:
     found: list[tuple[str, str, str | None]] = []
     if depth > _MAX_DEPTH:
         return found
     if isinstance(node, list):
         for item in node:
-            found.extend(_walk(item, role, depth + 1, calls, results, authoritative))
+            found.extend(_walk(item, role, depth + 1, calls, results, authoritative, prose_nodes))
         return found
     if not isinstance(node, dict):
         return found
@@ -1002,12 +983,12 @@ def _walk(
 
     text = _text_of(node, role)
     if text is not None:
-        found.append(("text", text, None))
+        found.append(("text" if id(node) in prose_nodes else "reference", text, None))
     for key, value in node.items():
         if key in _OUTPUT_KEYS:
             continue
         if isinstance(value, (dict, list)):
-            found.extend(_walk(value, role, depth + 1, calls, results, authoritative))
+            found.extend(_walk(value, role, depth + 1, calls, results, authoritative, prose_nodes))
     return found
 
 
