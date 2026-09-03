@@ -21,9 +21,11 @@ All notable changes to this project will be documented in this file.
 - Read coding-agent transcripts (JSON and JSON Lines) with `--session`,
   pairing recognized shell-tool calls in the supported structured formats
   (Claude Code, Codex CLI, and Gemini CLI records) with their recorded
-  results. Success is read only from structured envelope fields, never from
-  program output or bare text; string envelopes are interpreted only for Codex
-  call records of Codex's own `shell` and `exec_command` tools; several
+  results. Success is read only from the structured field each agent writes,
+  in the position it writes it (a Claude Code `tool_result` inside a user
+  message, a Codex output item paired with a Codex call record of its own
+  `shell` or `exec_command` tool; Gemini has none), never from program output
+  or bare text; a transcript with an unparsable line promotes nothing; several
   results for one call combine failure first; a call id reused for different
   calls, or a call found outside a recognized tool call position, attributes
   no result; call-shaped objects inside user or tool content are never
@@ -60,15 +62,15 @@ All notable changes to this project will be documented in this file.
   entries for one call failure first, overriding the transcript's own result
   only when call id and exact command text both match and the transcript
   recorded no failure, leaving mismatches and transcript commands the log
-  never saw unconfirmed, promotes successful
-  entries only, writes per-session reports, and announces newly verified
-  repositories once per session, without ever changing a Star. With
-  `--from gemini` the hooks answer `{}` when silent, as Gemini's hook contract
-  requires.
+  never saw unconfirmed (a failure whose call record is missing from a partial
+  transcript still counts), promotes successful entries only, writes
+  per-session reports, and announces newly verified repositories once per
+  session, without ever changing a Star. With `--from codex` or `--from
+  gemini` the hooks answer `{}` when silent, as those hook contracts require.
 - Bundle a Claude Code plugin marketplace with hooks and a `/thanks` command.
 - Name hook logs and reports after a sanitized session id plus a hash of the
-  original whenever sanitizing changed it, so distinct sessions never share a
-  file.
+  original id, always, so distinct sessions never share a file; a session
+  without an id uses its own `unscoped` file.
 - Document pip and release-wheel installation for environments without `pipx`.
 
 ## 0.4.2 - 2026-09-02

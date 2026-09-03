@@ -973,6 +973,7 @@ OUTCOME_UNCONFIRMED = "unconfirmed"
 OUTCOME_CONFLICT = "conflict"
 OUTCOME_AMBIGUOUS = "ambiguous"
 OUTCOME_UNANCHORED = "unanchored"
+OUTCOME_CORRUPTED = "corrupted"
 _PROMOTING_OUTCOMES = {OUTCOME_OK, OUTCOME_ATTESTED}
 
 PROVENANCE_DETAIL = "Session states that code was adapted from this repository"
@@ -1006,6 +1007,10 @@ _DEMOTED_DETAILS = {
     OUTCOME_UNANCHORED: (
         "Session recorded this command outside a recognized tool call position, so no result "
         "can be attributed to it; verify actual reuse"
+    ),
+    OUTCOME_CORRUPTED: (
+        "Session transcript contains a record that could not be parsed, so none of its results "
+        "can be trusted; verify actual reuse"
     ),
 }
 COMPOUND_DETAIL = (

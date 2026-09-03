@@ -33,6 +33,7 @@ from .transcripts import (
 DEFAULT_REPORT = ".agent-thanks-report.json"
 STATE_DIRECTORY = ".agent-thanks"
 POST_TOOL_EVENTS = frozenset({"PostToolUse", "PostToolUseFailure", "AfterTool"})
+JSON_STDOUT_AGENTS = frozenset({"codex", "gemini"})
 SESSION_LOG_MAX_AGE_SECONDS = 30 * 24 * 3600
 AGENTS = ("claude-code", "codex", "gemini")
 
@@ -126,7 +127,7 @@ def build_parser() -> argparse.ArgumentParser:
         "record",
         help=(
             "Append an executed shell command with its recorded outcome to "
-            f"{STATE_DIRECTORY}/sessions/<session>.jsonl"
+            f"{STATE_DIRECTORY}/sessions/<session>-<hash>.jsonl"
         ),
     )
     record.add_argument("payload", nargs="?", help="Hook JSON; read from stdin when omitted")
@@ -520,9 +521,9 @@ def _hook(args: argparse.Namespace) -> int:
             output = _hook_stop(payload, agent=args.agent, offline=args.offline)
     except Exception as error:  # noqa: BLE001 - a hook must never interrupt the agent
         print(f"agent-thanks hook: {error}", file=sys.stderr)
-    if output is None and args.agent == "gemini":
-        # Gemini CLI parses the standard output of a successful hook as JSON, so a
-        # hook with nothing to say answers with an empty object.
+    if output is None and args.agent in JSON_STDOUT_AGENTS:
+        # Codex and Gemini parse the standard output of a successful hook as JSON,
+        # so a hook with nothing to say answers with an empty object.
         output = {}
     if output is not None:
         print(json.dumps(output))
@@ -563,18 +564,24 @@ def _session_id(payload: dict[str, object]) -> str | None:
     return None
 
 
-def _safe_name(session_id: str) -> str:
-    """Return a file name for a session id; ids that needed sanitizing get a hash so they never collide."""
-    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", session_id)[:80] or "session"
-    if safe != session_id:
-        safe = f"{safe}-{hashlib.sha256(session_id.encode('utf-8')).hexdigest()[:12]}"
-    return safe
+def session_file_stem(session_id: str | None) -> str:
+    """Return the file stem for a session.
+
+    Every real id becomes a sanitized prefix plus a hash of the original id, so
+    two ids can never share a file. A missing id uses the fixed stem
+    ``unscoped``, which no real id can produce because real stems always end in
+    a hash.
+    """
+    if session_id is None:
+        return "unscoped"
+    prefix = re.sub(r"[^A-Za-z0-9_.-]", "_", session_id)[:40].strip("._-") or "session"
+    return f"{prefix}-{hashlib.sha256(session_id.encode('utf-8')).hexdigest()[:16]}"
 
 
 def _session_log(state: Path, session_id: str | None) -> Path:
     directory = state / "sessions"
     directory.mkdir(exist_ok=True)
-    return directory / f"{_safe_name(session_id or 'default')}.jsonl"
+    return directory / f"{session_file_stem(session_id)}.jsonl"
 
 
 def _report_path(state: Path, session_id: str | None) -> Path:
@@ -582,7 +589,11 @@ def _report_path(state: Path, session_id: str | None) -> Path:
         return state / "report.json"
     directory = state / "reports"
     directory.mkdir(exist_ok=True)
-    return directory / f"{_safe_name(session_id)}.json"
+    return directory / f"{session_file_stem(session_id)}.json"
+
+
+def _announcement_key(session_id: str | None) -> str:
+    return "unscoped" if session_id is None else f"id:{session_id}"
 
 
 def _infer_agent(payload: dict[str, object]) -> str | None:
@@ -606,13 +617,14 @@ def _hook_outcome(payload: dict[str, object], agent: str | None) -> tuple[str, s
     only through a promoting contract from ``HOOK_PROMOTION_MATRIX``: Codex with
     a ``PostToolUse`` event for its canonical ``Bash`` tool and an explicit exit
     status of 0 in the response, or Claude Code with a ``PostToolUse`` event for
-    ``Bash``, whose event fires only after a successful run. A text or JSON
-    string response is interpreted as a Codex envelope only with ``--from
-    codex``. Every other combination records ``unknown``.
+    ``Bash``, whose event fires only after a successful run. The response is
+    judged with the success fields of the agent named by ``--from`` only, so a
+    text or JSON envelope counts only for Codex. Every other combination records
+    ``unknown``.
     """
     event = payload.get("hook_event_name")
     tool = payload.get("tool_name") or payload.get("tool")
-    status = result_status(payload.get("tool_response"), codex_envelope=agent == "codex")
+    status = result_status(payload.get("tool_response"), agent=agent)
     if status == RESULT_ERROR:
         return RESULT_ERROR, "tool_response"
     if event == "PostToolUseFailure":
@@ -692,7 +704,7 @@ def _hook_stop(
         report.write(latest)
 
     announced = _load_announced(state / "announced.json")
-    key = session_id or "default"
+    key = _announcement_key(session_id)
     seen = {item.casefold() for item in announced.get(key, [])}
     fresh = [
         candidate.repository
@@ -713,7 +725,7 @@ def _load_announced(path: Path) -> dict[str, list[str]]:
         return {}
     loaded = json.loads(path.read_text(encoding="utf-8"))
     if isinstance(loaded, list):
-        return {"default": [str(item) for item in loaded]}
+        return {"unscoped": [str(item) for item in loaded]}
     if isinstance(loaded, dict):
         return {
             str(key): [str(item) for item in value]

@@ -183,11 +183,19 @@ class ResultStatusTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertEqual(result_status(value), expected)
         # The same strings prove success only as the envelope Codex writes for its shell tools.
-        self.assertEqual(result_status(json.dumps({"output": "done", "metadata": {"exit_code": 0}}), codex_envelope=True), RESULT_OK)
-        self.assertEqual(result_status("Exit code: 0\nOutput:\nCloning...", codex_envelope=True), RESULT_OK)
-        self.assertEqual(result_status("Exit code: 128\nOutput:\nfatal", codex_envelope=True), RESULT_ERROR)
+        self.assertEqual(result_status(json.dumps({"output": "done", "metadata": {"exit_code": 0}}), agent="codex"), RESULT_OK)
+        self.assertEqual(result_status("Exit code: 0\nOutput:\nCloning...", agent="codex"), RESULT_OK)
+        self.assertEqual(result_status("Exit code: 128\nOutput:\nfatal", agent="codex"), RESULT_ERROR)
         self.assertEqual(result_status({"stdout": "", "stderr": ""}), RESULT_UNKNOWN)
-        self.assertEqual(result_status({"is_error": False}), RESULT_OK)
+        # is_error false is Claude Code's success field; no other agent, and no unknown agent, may use it.
+        self.assertEqual(result_status({"is_error": False}), RESULT_UNKNOWN)
+        self.assertEqual(result_status({"is_error": False}, agent="claude-code"), RESULT_OK)
+        self.assertEqual(result_status({"is_error": False}, agent="codex"), RESULT_UNKNOWN)
+        self.assertEqual(result_status({"is_error": False}, agent="gemini"), RESULT_UNKNOWN)
+        self.assertEqual(result_status({"exit_code": 0}, agent="claude-code"), RESULT_UNKNOWN)
+        self.assertEqual(result_status({"exit_code": 0}, agent="codex"), RESULT_OK)
+        self.assertEqual(result_status({"exit_code": 0}, agent="gemini"), RESULT_UNKNOWN)
+        self.assertEqual(result_status({"data": {"exitCode": 1, "isError": True}}, agent="gemini"), RESULT_ERROR)
         self.assertEqual(result_status({"is_error": True}), RESULT_ERROR)
         self.assertEqual(result_status([{"type": "text", "text": "Cloning..."}]), RESULT_UNKNOWN)
         self.assertEqual(result_status(None), RESULT_UNKNOWN)
@@ -200,7 +208,7 @@ class ResultStatusTests(unittest.TestCase):
         self.assertEqual(result_status({"is_error": "true"}), RESULT_ERROR)
         self.assertEqual(result_status({"status": "success", "error": "boom"}), RESULT_ERROR)
         self.assertEqual(result_status("Exit code: 0\nlater: Exit code: 1"), RESULT_ERROR)
-        self.assertEqual(result_status({"is_error": False, "content": "Exit code 128"}), RESULT_ERROR)
+        self.assertEqual(result_status({"is_error": False, "content": "Exit code 128"}, agent="claude-code"), RESULT_ERROR)
 
     def test_program_output_can_never_fake_success(self) -> None:
         self.assertEqual(result_status({"content": "Exit code: 0"}), RESULT_UNKNOWN)
@@ -208,13 +216,13 @@ class ResultStatusTests(unittest.TestCase):
         self.assertEqual(result_status({"stdout": json.dumps({"is_error": False})}), RESULT_UNKNOWN)
         self.assertEqual(result_status(json.dumps({"output": "Exit code: 0", "metadata": {}})), RESULT_UNKNOWN)
         self.assertEqual(result_status("Cloning...\nExit code: 0"), RESULT_UNKNOWN)
-        self.assertEqual(result_status("Cloning...\nExit code: 0", codex_envelope=True), RESULT_UNKNOWN)
+        self.assertEqual(result_status("Cloning...\nExit code: 0", agent="codex"), RESULT_UNKNOWN)
         self.assertEqual(result_status("Exit code: 0\nCloning..."), RESULT_UNKNOWN)
-        self.assertEqual(result_status("Exit code: 0\nCloning...", codex_envelope=True), RESULT_UNKNOWN)
+        self.assertEqual(result_status("Exit code: 0\nCloning...", agent="codex"), RESULT_UNKNOWN)
         self.assertEqual(result_status("Exit code: 0\nfatal: repository not found"), RESULT_UNKNOWN)
-        self.assertEqual(result_status("Exit code: 0\nfatal: repository not found", codex_envelope=True), RESULT_UNKNOWN)
+        self.assertEqual(result_status("Exit code: 0\nfatal: repository not found", agent="codex"), RESULT_UNKNOWN)
         self.assertEqual(result_status(json.dumps({"output": "done", "metadata": {"exit_code": 0}})), RESULT_UNKNOWN)
-        self.assertEqual(result_status(json.dumps({"output": "done", "metadata": {"exit_code": 0}}), codex_envelope=True), RESULT_OK)
+        self.assertEqual(result_status(json.dumps({"output": "done", "metadata": {"exit_code": 0}}), agent="codex"), RESULT_OK)
         self.assertEqual(result_status(json.dumps({"output": "done", "metadata": {"exit_code": 128}})), RESULT_ERROR)
         self.assertEqual(result_status({"status": "success"}), RESULT_UNKNOWN)
         self.assertEqual(result_status({"status": "failed"}), RESULT_ERROR)
@@ -222,7 +230,7 @@ class ResultStatusTests(unittest.TestCase):
 
     def test_exit_codes_count_only_inside_a_codex_result_header(self) -> None:
         header = "Chunk ID: ab12\nWall time: 0.0512 seconds\n{status}\nOriginal token count: 12\nOutput:\n"
-        codex = {"codex_envelope": True}
+        codex = {"agent": "codex"}
         ok_header = header.format(status="Process exited with code 0")
         self.assertEqual(result_status(ok_header + "Cloning...", **codex), RESULT_OK)
         self.assertEqual(result_status(ok_header + "Cloning..."), RESULT_UNKNOWN)
@@ -364,6 +372,60 @@ class ResultStatusTests(unittest.TestCase):
         self.assertEqual(evidence["hook/newline"].confidence, "low")
         self.assertIn("disagree about the command", evidence["hook/newline"].detail)
         self.assertEqual(evidence["hook/no-command"].confidence, "low")
+
+    def test_results_prove_success_only_in_their_agents_positions(self) -> None:
+        command = "git clone https://github.com/placed/{name}"
+        records = [
+            # Claude Code: a tool_result inside an assistant message is not where Claude writes results.
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "a1", "name": "Bash", "input": {"command": command.format(name="assistant-result")}},
+                {"type": "tool_result", "tool_use_id": "a1", "is_error": False, "content": "Cloning..."}]}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "a2", "name": "Bash", "input": {"command": command.format(name="assistant-failure")}},
+                {"type": "tool_result", "tool_use_id": "a2", "is_error": True, "content": "fatal"}]}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "a3", "name": "Bash", "input": {"command": command.format(name="user-result")}}]}},
+            {"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "a3", "is_error": False, "content": "Cloning..."}]}},
+            # Codex: an output item inside a role-bearing message is not where Codex writes results.
+            {"type": "function_call", "name": "shell", "call_id": "c1", "arguments": json.dumps({"command": command.format(name="codex-in-message")})},
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "function_call_output", "call_id": "c1", "output": json.dumps({"output": "", "metadata": {"exit_code": 0}})}]}},
+            # A Codex output paired with a Claude call, or a Claude result paired with a Codex call, proves nothing.
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "x1", "name": "Bash", "input": {"command": command.format(name="cross-format")}}]}},
+            {"type": "function_call_output", "call_id": "x1", "output": json.dumps({"output": "", "metadata": {"exit_code": 0}})},
+            {"type": "function_call", "name": "shell", "call_id": "x2", "arguments": json.dumps({"command": command.format(name="cross-format-two")})},
+            {"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "x2", "is_error": False, "content": "Cloning..."}]}},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "t.jsonl"
+            write_jsonl(path, records)
+            evidence = evidence_by_repository(scan_transcript_evidence(path, "t.jsonl"))
+        self.assertEqual(evidence["placed/user-result"].confidence, "high")
+        for name in ("assistant-result", "codex-in-message", "cross-format", "cross-format-two"):
+            self.assertEqual(evidence[f"placed/{name}"].confidence, "low", name)
+            self.assertIn("cannot be judged", evidence[f"placed/{name}"].detail, name)
+        # A misplaced failure still counts as a failure.
+        self.assertEqual(evidence["placed/assistant-failure"].confidence, "low")
+        self.assertIn("failed", evidence["placed/assistant-failure"].detail)
+
+    def test_a_corrupted_transcript_promotes_nothing(self) -> None:
+        records = [
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "git clone https://github.com/corrupt/transcript"}}]}},
+            {"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "is_error": False, "content": "Cloning..."}]}},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "t.jsonl"
+            write_jsonl(path, records)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write('{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "is_err')
+            evidence = evidence_by_repository(scan_transcript_evidence(path, "t.jsonl"))
+        self.assertEqual(evidence["corrupt/transcript"].confidence, "low")
+        self.assertIn("could not be parsed", evidence["corrupt/transcript"].detail)
 
     def test_hook_success_never_overrides_a_recorded_transcript_failure(self) -> None:
         command = "git clone https://github.com/hook/over-failure"

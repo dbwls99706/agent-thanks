@@ -98,9 +98,13 @@ successful exit then does not belong to the repository command. When a hook
 log exists for the session, it is the authority: a transcript command whose
 success the log did not confirm, whose command text differs from the log's
 entry, or whose call id the transcript reuses stays low as well, and a hook
-entry stays low when the transcript recorded a failure for the same call or
-when the log contains a corrupted line. A provenance phrase typed as a tool
-command is a reference, not provenance. Gemini CLI
+entry stays low when the transcript recorded a failure for the same call (even
+without the call record) or when the log contains a corrupted line. A result
+recorded outside the position its agent writes, such as a Claude Code
+`tool_result` inside an assistant message, is never a success, and a
+transcript with an unparsable line keeps every command a reference. A
+provenance phrase typed as a tool command is a reference, not provenance.
+Gemini CLI
 commands stay low because Gemini records failures
 explicitly but marks success only by their absence, which is never accepted.
 The evidence detail names which case applied.
@@ -115,7 +119,8 @@ transcripts merely to force a high-confidence classification.
 
 `agent-thanks hook stop` prints a notice only when a repository shows verified
 use for the first time in that agent session; later turns of the same session
-stay silent. Check `.agent-thanks/reports/<session>.json` (or the latest copy
+stay silent. Check `.agent-thanks/reports/<session>-<hash>.json` (or the latest
+copy
 at `.agent-thanks/report.json`) for the full result, including references and
 unresolved dependencies. The hook also stays silent when the turn ran no shell
 commands, when every clone or install in the turn failed or left no judgeable

@@ -73,8 +73,8 @@ does contact GitHub to identify the active account.
 `agent-thanks hook record` and `agent-thanks hook stop` are the same kind of
 operation. They exist so coding agents can trigger detection after a turn
 without interrupting the agent: `record` appends executed shell commands to
-`.agent-thanks/sessions/<session>.jsonl`, and `stop` scans the project, writes
-`.agent-thanks/reports/<session>.json` plus a latest copy at
+`.agent-thanks/sessions/<session>-<hash>.jsonl`, and `stop` scans the project,
+writes `.agent-thanks/reports/<session>-<hash>.json` plus a latest copy at
 `.agent-thanks/report.json`, and prints a one-line notice the first time a
 repository shows verified use in that session. Hooks never authenticate, never
 contact GitHub, and always exit successfully, so a failure inside a hook cannot
@@ -109,12 +109,14 @@ call whose recorded command differs from the log's is a conflict, a transcript
 command the log never saw stays unconfirmed, and only `ok` entries are
 promoted. The demotion is symmetric: a hook entry whose call id the transcript
 records with a different command, reuses for different calls, or records with
-an explicit failure is demoted too, so a disagreement between the two sources
-never leaves a success standing on either side. The scanner applies these rules whenever a hook log and a
-transcript are scanned together, from the hooks or from `scan --session`. The
-transcript is merged for prose provenance and for the calls the log confirms.
-With `--from gemini` the hooks print `{}` when they have nothing to say,
-because Gemini parses a hook's standard output as JSON.
+an explicit failure is demoted too, and a failure whose call record is missing
+from a partial transcript still counts, so a disagreement between the two
+sources never leaves a success standing on either side. The scanner applies
+these rules whenever a hook log and a transcript are scanned together, from
+the hooks or from `scan --session`. The transcript is merged for prose
+provenance and for the calls the log confirms. With `--from codex` or
+`--from gemini` the hooks print `{}` when they have nothing to say, because
+both agents parse a hook's standard output as JSON.
 
 Agent transcripts are read with a narrower rule than shell logs. Every
 recorded tool result is judged as `ok`, `error`, or `unknown` with failure
@@ -123,16 +125,23 @@ non-empty `error`, a failure status, or an "Exit code: N" line with N != 0,
 wherever it appears) makes the result `error` even when a success signal is
 also present; without a failure signal only an exact success signal makes it
 `ok`; everything else, including a result with no signal at all, is `unknown`.
-Success signals are read only from structured envelope fields: in a result
-object, `is_error` equal to `false` or an integer exit code of 0 at the top
-level or under `metadata`. A string result is interpreted only when the
-paired call is a Codex call record (`function_call` or `custom_tool_call`)
-for one of Codex's own shell tools (`shell`, `exec_command`), because Codex
-writes that envelope itself: a JSON-encoded envelope's exit code, or the exit
-code in the header block that precedes the `Output:` marker (`Exit code: 0`
-or `Process exited with code 0`, with every header line a header field). A
-call id that the transcript reuses for different calls attributes no result
-to any of them. Bare text from any other tool, program output (`content`,
+Success signals are read only from the structured field each agent writes, and
+only in the position that agent writes it. A Claude Code `tool_result` counts
+only inside a user-role message, paired with a `tool_use` call, and only its
+`is_error` equal to `false` is a success. A Codex output item counts only
+without a role, paired with a Codex call record (`function_call` or
+`custom_tool_call`) of one of Codex's own shell tools (`shell`,
+`exec_command`), and only an exit code of 0 is a success: in a result object,
+in the JSON-encoded envelope, or in the header block that precedes the
+`Output:` marker (`Exit code: 0` or `Process exited with code 0`, with every
+header line a header field). A Gemini `functionResponse` counts only inside a
+user-role message paired with a `functionCall`, and Gemini defines no success
+signal. A result anywhere else, or paired with a call of another kind, keeps
+its failure signals but never yields a success. A call id that the transcript
+reuses for different calls attributes no result to any of them, and a
+transcript with an unparsable line is corrupted: its commands stay references
+whatever its results say, while a hook log scanned with it stands on its own
+record. Bare text from any other tool, program output (`content`,
 `output`, `stdout`, and similar), and a `status` field can never supply a
 success signal, so a program that prints a success message, a fake header, or
 a success JSON cannot fake one. Results are indexed only from envelope
@@ -160,8 +169,10 @@ leave the command a reference:
    marker and an (agent, event, tool, basis) row of `HOOK_PROMOTION_MATRIX`,
    checked when it is recorded (`_hook_outcome`) and again when it is read
    (`hook_entry_status`), inside a log without corrupted lines
-   (`_hook_log_entries`); a transcript result needs a result object or a
-   Codex call record of a Codex shell tool (`_result_of`).
+   (`_hook_log_entries`); a transcript result needs its agent's position, its
+   agent's call kind, and its agent's success field (`_result_of`,
+   `result_status`), inside a transcript without unparsable lines
+   (`load_transcript`).
 2. A non-empty tool call id indexed at an envelope position with exactly this
    call's fingerprint and for this call alone; a call found anywhere else, or
    with another fingerprint, claims nothing (`_index_calls`,
@@ -178,12 +189,15 @@ leave the command a reference:
    segments, without `env` assignments, `set`, `export`, `printf`, or variable
    assignments (`analyze_command_line`).
 7. No conflicting signal: every result and every hook entry for the call, from
-   every source scanned together, combines failure first (`combine_statuses`,
-   `combine_hook_entries`, `scan_hook_log_evidence`, `_command_outcome`).
+   every source scanned together, combines failure first, including a failure
+   result whose call record is missing (`combine_statuses`,
+   `combine_hook_entries`, `transcript_calls`, `scan_hook_log_evidence`,
+   `_command_outcome`).
 
-Session ids become file names through sanitizing plus, whenever sanitizing
-changed anything, a hash of the original id, so two ids that sanitize alike
-never share a log or a report.
+Session ids become file names through a sanitized prefix plus a hash of the
+original id, always, so no two ids share a log or a report; a missing id uses
+the fixed stem `unscoped`, which no real id can produce, and announcements are
+keyed the same way.
 
 Transcript lookups for `--from` return a file only when the project directory
 it records equals the current directory after normalization, and, when the

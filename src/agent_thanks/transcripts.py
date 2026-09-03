@@ -27,6 +27,7 @@ from typing import Any, Iterable, Iterator, Mapping, NamedTuple
 from .models import Evidence
 from .session import (
     OUTCOME_AMBIGUOUS,
+    OUTCOME_CORRUPTED,
     OUTCOME_UNANCHORED,
     OUTCOME_CONFLICT,
     OUTCOME_ERROR,
@@ -149,14 +150,23 @@ def is_transcript(path: Path) -> bool:
     return head.lstrip("﻿ \t\r\n").startswith(("{", "["))
 
 
-def load_transcript_records(path: Path) -> list[tuple[int, Any]]:
-    """Return (record number, record) pairs.
+class Transcript(NamedTuple):
+    """The records of a transcript and whether any non-empty line failed to parse."""
 
-    A JSON Lines file numbers records by physical line. A single JSON document
-    numbers the items of its message list, or counts as one record.
+    records: list[tuple[int, Any]]
+    corrupted: bool
+
+
+def load_transcript(path: Path) -> Transcript:
+    """Return (record number, record) pairs and whether the file is corrupted.
+
+    A JSON Lines file numbers records by physical line; a line that is not JSON
+    marks the transcript corrupted, and a corrupted transcript can prove no
+    success. A single JSON document numbers the items of its message list, or
+    counts as one record.
     """
     text = path.read_text(encoding="utf-8", errors="replace")
-    stripped = text.lstrip("﻿ \t\r\n")
+    stripped = text.lstrip("\ufeff \t\r\n")
     try:
         document = json.loads(stripped)
     except json.JSONDecodeError:
@@ -164,6 +174,7 @@ def load_transcript_records(path: Path) -> list[tuple[int, Any]]:
 
     if document is None:
         records: list[tuple[int, Any]] = []
+        corrupted = False
         for number, line in enumerate(text.splitlines(), start=1):
             line = line.strip()
             if not line:
@@ -171,16 +182,21 @@ def load_transcript_records(path: Path) -> list[tuple[int, Any]]:
             try:
                 records.append((number, json.loads(line)))
             except json.JSONDecodeError:
-                continue
-        return records
+                corrupted = True
+        return Transcript(records, corrupted)
     if isinstance(document, list):
-        return list(enumerate(document, start=1))
+        return Transcript(list(enumerate(document, start=1)), False)
     if isinstance(document, dict):
         for key in _DOCUMENT_LIST_KEYS:
             value = document.get(key)
             if isinstance(value, list):
-                return list(enumerate(value, start=1))
-    return [(1, document)]
+                return Transcript(list(enumerate(value, start=1)), False)
+    return Transcript([(1, document)], False)
+
+
+def load_transcript_records(path: Path) -> list[tuple[int, Any]]:
+    """Return (record number, record) pairs; see ``load_transcript``."""
+    return load_transcript(path).records
 
 
 def iter_transcript_records(
@@ -198,13 +214,16 @@ def iter_transcript_records(
     log says so for the same call id and the identical command text, a command
     the hook log never saw is 'unconfirmed', and a call whose recorded command
     differs from the hook log's is a 'conflict'. A call id that the transcript
-    reuses for different calls is a 'conflict' as well.
+    reuses for different calls is 'ambiguous', and every command of a transcript
+    with an unparsable line is 'corrupted'.
     """
-    records = load_transcript_records(path)
-    calls = _index_calls(records)
-    results = _index_results(records, calls)
-    for number, record in records:
+    transcript = load_transcript(path)
+    calls = _index_calls(transcript.records)
+    results = _index_results(transcript.records, calls)
+    for number, record in transcript.records:
         for kind, text, outcome in _walk(record, None, 0, calls, results, authoritative):
+            if kind == "command" and transcript.corrupted:
+                outcome = OUTCOME_CORRUPTED
             if text.strip():
                 yield number, kind, text, outcome
 
@@ -234,44 +253,53 @@ def scan_transcript_evidence(
 
 
 class TranscriptCall(NamedTuple):
-    """What a transcript knows about one tool call id: its shell command and its combined result."""
+    """What a transcript knows about one tool call id: its shell command, its combined result, and whether a call record exists."""
 
     command: str | None
     status: str
+    recorded: bool
 
 
 def transcript_calls(path: Path) -> dict[str, TranscriptCall]:
-    """Map each tool call id a transcript uses to its shell command and combined result.
+    """Map each tool call id a transcript mentions to its shell command and combined result.
 
-    The command is ``None`` when the id is reused for different calls or belongs
-    to a call that is not a shell command, so a hook log entry with that id can
-    never agree with the transcript. The status is the failure-first combination
-    of every result the transcript recorded for the id, or unknown without one.
+    Ids come from call records and from result records alike, so a failure whose
+    call record is missing from a partial transcript still counts. The command is
+    ``None`` when the id is reused for different calls, belongs to a call that is
+    not a shell command, or has no call record (``recorded`` is False then). The
+    status is the failure-first combination of every result recorded for the id,
+    or unknown without one.
     """
-    records = load_transcript_records(path)
-    calls = _index_calls(records)
-    results = _index_results(records, calls)
-    return {
+    transcript = load_transcript(path)
+    calls = _index_calls(transcript.records)
+    results = _index_results(transcript.records, calls)
+    known = {
         call_id: TranscriptCall(
-            info.command if info is not None else None, results.get(call_id, RESULT_UNKNOWN)
+            info.command if info is not None else None, results.get(call_id, RESULT_UNKNOWN), True
         )
         for call_id, info in calls.items()
     }
+    for call_id, status in results.items():
+        known.setdefault(call_id, TranscriptCall(None, status, False))
+    return known
 
 
 def merge_transcript_calls(maps: Iterable[Mapping[str, TranscriptCall]]) -> dict[str, TranscriptCall]:
     """Merge call maps from several transcripts; disagreeing commands become ``None`` and results combine failure first."""
     commands: dict[str, str | None] = {}
+    recorded: dict[str, bool] = {}
     statuses: dict[str, list[str]] = {}
     for calls in maps:
         for call_id, call in calls.items():
-            if call_id in commands and commands[call_id] != call.command:
-                commands[call_id] = None
-            else:
-                commands.setdefault(call_id, call.command)
+            if call.recorded:
+                if recorded.get(call_id) and commands.get(call_id) != call.command:
+                    commands[call_id] = None
+                else:
+                    commands.setdefault(call_id, call.command)
+                recorded[call_id] = True
             statuses.setdefault(call_id, []).append(call.status)
     return {
-        call_id: TranscriptCall(commands[call_id], combine_statuses(values))
+        call_id: TranscriptCall(commands.get(call_id), combine_statuses(values), recorded.get(call_id, False))
         for call_id, values in statuses.items()
     }
 
@@ -418,9 +446,9 @@ def scan_hook_log_evidence(
             outcome = HOOK_LOG_STATUSES.get(combined[call_id].status, OUTCOME_UNKNOWN)
             if transcript_calls is not None and call_id in transcript_calls:
                 recorded = transcript_calls[call_id]
-                if recorded.command is None:
+                if recorded.recorded and recorded.command is None:
                     outcome = OUTCOME_AMBIGUOUS
-                elif recorded.command != command:
+                elif recorded.recorded and recorded.command != command:
                     outcome = OUTCOME_CONFLICT
                 elif recorded.status == RESULT_ERROR:
                     outcome = OUTCOME_ERROR
@@ -628,13 +656,16 @@ class CallInfo(NamedTuple):
 def _index_calls(records: Iterable[tuple[int, Any]]) -> dict[str, CallInfo | None]:
     """Map tool call identifiers to the call behind them, read from envelope positions only.
 
-    An identifier that the transcript reuses for different calls (another tool,
+    Calls inside user or tool content are never actions and are not indexed. An
+    identifier that the transcript reuses for different calls (another tool,
     other parameters, or another record kind) maps to ``None``: no result can
     then be attributed to any of them.
     """
     calls: dict[str, CallInfo | None] = {}
     for _, record in records:
-        for node in _result_envelopes(record):
+        for node, role in _result_envelopes(record):
+            if role in _USER_ROLES:
+                continue
             call = _call_of(node)
             if call is None or call[2] is None:
                 continue
@@ -673,20 +704,27 @@ def _index_results(
     """
     statuses: dict[str, list[str]] = {}
     for _, record in records:
-        for node in _result_envelopes(record):
-            entry = _result_of(node, calls)
+        for node, role in _result_envelopes(record):
+            entry = _result_of(node, role, calls)
             if entry is not None:
                 statuses.setdefault(entry[0], []).append(entry[1])
     return {call_id: combine_statuses(values) for call_id, values in statuses.items()}
 
 
-def _result_envelopes(record: Any) -> Iterator[dict[str, Any]]:
+def _result_envelopes(record: Any) -> Iterator[tuple[dict[str, Any], str | None]]:
+    """Yield the envelope positions of a record with the role that governs each.
+
+    Envelope positions are the record itself, its ``payload``, and the items of
+    its message ``content`` or ``parts`` lists; the record's role (or the
+    payload's own role) applies to everything inside it.
+    """
     if not isinstance(record, dict):
         return
-    yield record
+    role = _role_of(record, None)
+    yield record, role
     payload = record.get("payload")
     if isinstance(payload, dict):
-        yield payload
+        yield payload, _role_of(payload, role)
     message = record.get("message") if isinstance(record.get("message"), dict) else record
     for container in (
         message.get("content"),
@@ -697,7 +735,7 @@ def _result_envelopes(record: Any) -> Iterator[dict[str, Any]]:
         if isinstance(container, list):
             for item in container:
                 if isinstance(item, dict):
-                    yield item
+                    yield item, role
 
 
 def _iter_dicts(node: Any, depth: int) -> Iterator[dict[str, Any]]:
@@ -712,23 +750,24 @@ def _iter_dicts(node: Any, depth: int) -> Iterator[dict[str, Any]]:
             yield from _iter_dicts(item, depth + 1)
 
 
-def result_status(value: Any, *, codex_envelope: bool = False) -> str:
+def result_status(value: Any, *, agent: str | None = None) -> str:
     """Judge a recorded tool result envelope with failure-first semantics.
 
-    Success signals are accepted only from structured envelope fields: in a
-    result object, an ``is_error`` flag equal to ``False`` or an integer exit
-    code of 0 (top level or under ``metadata``). A string result yields a
-    success signal only when ``codex_envelope`` is set, which callers do only
-    for the envelope Codex writes for its own shell tools: a JSON-encoded
-    envelope's exit code, or the exit code in the header block that precedes
-    the ``Output:`` marker. Program output (``output``, ``stdout``,
-    ``content``, ``message``, ``text``) and any other bare text can never create
-    a success signal, so a program that prints a success message cannot fake
-    one. Failure signals are accepted from anywhere. Any failure makes the
-    result RESULT_ERROR; without a failure, an exact success makes it
-    RESULT_OK; otherwise RESULT_UNKNOWN.
+    Failure signals are accepted from anywhere: ``is_error`` true, a non-zero
+    exit code, a non-empty ``error``, a failure status, Gemini's ``data`` block
+    with ``isError`` or a non-zero ``exitCode``, and "Exit code: N" lines with N
+    != 0 inside program output. Success signals are accepted only from the
+    structured field the named agent actually writes: for ``claude-code`` an
+    ``is_error`` flag equal to ``False`` in a result object; for ``codex`` an
+    integer exit code of 0 in a result object (top level or under ``metadata``),
+    in a JSON-encoded envelope, or in the header block that precedes the
+    ``Output:`` marker. Gemini defines no success signal, and with no agent no
+    success is ever read. Program output and bare text never create a success
+    signal, so a program that prints a success message cannot fake one. Any
+    failure makes the result RESULT_ERROR; without a failure, an exact success
+    makes it RESULT_OK; otherwise RESULT_UNKNOWN.
     """
-    failures, successes = _envelope_signals(value, 0, codex_envelope)
+    failures, successes = _envelope_signals(value, 0, agent)
     if failures:
         return RESULT_ERROR
     if successes:
@@ -736,7 +775,7 @@ def result_status(value: Any, *, codex_envelope: bool = False) -> str:
     return RESULT_UNKNOWN
 
 
-def _envelope_signals(value: Any, depth: int, codex_envelope: bool) -> tuple[int, int]:
+def _envelope_signals(value: Any, depth: int, agent: str | None) -> tuple[int, int]:
     failures = successes = 0
     if depth > 4:
         return failures, successes
@@ -744,20 +783,25 @@ def _envelope_signals(value: Any, depth: int, codex_envelope: bool) -> tuple[int
         if "is_error" in value:
             flag = value["is_error"]
             if flag is False:
-                successes += 1
+                if agent == "claude-code":
+                    successes += 1
             elif flag is True or (not isinstance(flag, bool) and bool(flag)):
                 failures += 1
         code = _exit_code(value)
         if code is not None:
-            if code == 0:
-                successes += 1
-            else:
+            if code != 0:
                 failures += 1
+            elif agent == "codex":
+                successes += 1
         if value.get("error"):
             failures += 1
         status = value.get("status")
         if isinstance(status, str) and status.casefold() in _FAILURE_STATUSES:
             failures += 1
+        data = value.get("data")
+        if isinstance(data, dict):
+            if _exit_code(data) not in (None, 0) or data.get("isError") is True:
+                failures += 1
         for key in _RESULT_TEXT_KEYS:
             failures += _output_failures(value.get(key), depth + 1)
         return failures, successes
@@ -769,12 +813,12 @@ def _envelope_signals(value: Any, depth: int, codex_envelope: bool) -> tuple[int
             except json.JSONDecodeError:
                 parsed = None
             if isinstance(parsed, dict):
-                # A JSON-encoded envelope: only Codex's own shell tools may prove success with it.
+                # A JSON-encoded envelope: only Codex writes one, and only for its shell tools.
                 code = _exit_code(parsed)
                 if code is not None:
                     if code != 0:
                         failures += 1
-                    elif codex_envelope:
+                    elif agent == "codex":
                         successes += 1
                 if parsed.get("error"):
                     failures += 1
@@ -784,7 +828,7 @@ def _envelope_signals(value: Any, depth: int, codex_envelope: bool) -> tuple[int
                 for key in _RESULT_TEXT_KEYS:
                     failures += _output_failures(parsed.get(key), depth + 1)
                 return failures, successes
-        header, body = _split_text_envelope(stripped) if codex_envelope else ("", stripped)
+        header, body = _split_text_envelope(stripped) if agent == "codex" else ("", stripped)
         for match in _EXIT_CODE_PATTERN.finditer(header):
             if int(match.group(1)) == 0:
                 successes += 1
@@ -849,26 +893,37 @@ def _output_failures(output: Any, depth: int) -> int:
 
 
 def _result_of(
-    node: dict[str, Any], calls: Mapping[str, CallInfo | None]
+    node: dict[str, Any], role: str | None, calls: Mapping[str, CallInfo | None]
 ) -> tuple[str, str] | None:
-    """Pair a recorded result with its call identifier; every format uses the same judge."""
+    """Pair a recorded result with its call identifier; every format uses the same judge.
+
+    A result proves success only in the position its agent writes it: a Claude
+    Code ``tool_result`` inside a user-role message paired with a ``tool_use``
+    call; a Codex output item without a role paired with a Codex call record of
+    a Codex shell tool; a Gemini ``functionResponse`` inside a user-role message
+    paired with a ``functionCall``. A result anywhere else, or paired with a call
+    of another kind, keeps its failure signals but never yields a success.
+    """
     node_type = node.get("type")
     if node_type == "tool_result" and isinstance(node.get("tool_use_id"), str):
-        return node["tool_use_id"], result_status(node)
+        call_id = node["tool_use_id"]
+        placed = role == "user" and _call_kind_is(calls.get(call_id), {"tool_use"})
+        return call_id, result_status(node, agent="claude-code" if placed else None)
     if node_type in _CODEX_OUTPUT_TYPES and isinstance(node.get("call_id"), str):
-        # Codex writes the output envelope itself only for its own shell tools, and
-        # only a Codex call record proves that this is such a call. Any other string
-        # result is program output and never proves success.
         call_id = node["call_id"]
         info = calls.get(call_id)
-        codex_envelope = (
-            info is not None and info.kind in _CODEX_CALL_TYPES and info.tool in CODEX_SHELL_TOOLS
-        )
-        return call_id, result_status(node.get("output"), codex_envelope=codex_envelope)
+        placed = role is None and _call_kind_is(info, _CODEX_CALL_TYPES) and info.tool in CODEX_SHELL_TOOLS
+        return call_id, result_status(node.get("output"), agent="codex" if placed else None)
     response = node.get("functionResponse")
     if isinstance(response, dict) and isinstance(response.get("id"), str):
-        return response["id"], result_status(response.get("response"))
+        call_id = response["id"]
+        placed = role == "user" and _call_kind_is(calls.get(call_id), {"functionCall"})
+        return call_id, result_status(response.get("response"), agent="gemini" if placed else None)
     return None
+
+
+def _call_kind_is(info: CallInfo | None, kinds: frozenset[str] | set[str]) -> bool:
+    return info is not None and info.kind in kinds
 
 
 def _walk(

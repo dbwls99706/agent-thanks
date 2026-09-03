@@ -252,12 +252,12 @@ ways, and neither interrupts the agent or changes a Star:
    and JSON Lines files are detected automatically. A command counts only when
    a known shell tool (`Bash`, `shell`, `exec_command`, `run_shell_command`,
    and similar) that the agent itself called executed it, the transcript
-   records an exact success for that call in the result envelope (`is_error`
-   equal to `false` or an exit code of 0 in a result object, or, for a Codex
-   call record of Codex's own `shell` or `exec_command` tool only, the exit
-   code in the JSON or header envelope Codex writes ahead of the program
-   output) with no failure signal beside it, the call id is used for that call
-   alone, the
+   records an exact success for that call in the position and field its agent
+   writes (`is_error` equal to `false` in a Claude Code `tool_result` inside a
+   user message, or an exit code of 0 in the JSON or header envelope Codex
+   writes for its own `shell` or `exec_command` tool; Gemini records no
+   success signal) with no failure signal beside it, the call id is used for
+   that call alone, the transcript has no unparsable line, the
    call is a single logical line, and the statement is a single command or an
    `&&` chain whose other segments are trivially safe (`cd`, `mkdir`, `echo`,
    and similar). Program output and bare text can never supply a success
@@ -273,7 +273,7 @@ ways, and neither interrupts the agent or changes a Star:
    review-only reference. Tool output, your prompts, and hidden reasoning are
    never treated as actions.
 2. **Hooks.** `agent-thanks hook record` appends every executed shell command
-   to `.agent-thanks/sessions/<session>.jsonl` as a structured entry with its
+   to `.agent-thanks/sessions/<session>-<hash>.jsonl` as a structured entry with its
    recorded `status` (`ok`, `error`, or `unknown`) and the `basis` for it. A
    failure always wins: an explicit failure in the payload or a Claude Code
    `PostToolUseFailure` event records `error`. A success is recorded only
@@ -290,18 +290,23 @@ ways, and neither interrupts the agent or changes a Star:
    several entries for one tool call combine failure first, the log's status
    overrides the transcript's own result for a call only when the call id and
    the exact command text both match and the transcript recorded no failure
-   for it, a mismatch or a recorded failure demotes the hook entry and the
-   transcript command alike, a call id the transcript reuses for different
+   for it (a failure whose call record is missing from a partial transcript
+   still counts), a mismatch or a recorded failure demotes the hook entry and
+   the transcript command alike, a call id the transcript reuses for different
    calls is ambiguous, and a transcript command the log never saw stays
    unconfirmed. The transcript is merged for prose
    provenance and for the calls the log confirms. The hook promotes only `ok`
    entries, writes
-   `.agent-thanks/reports/<session>.json` (and a copy at
+   `.agent-thanks/reports/<session>-<hash>.json` (and a copy at
    `.agent-thanks/report.json` as the latest result), and announces
    repositories the first time they show verified use in that session. Logs
    and reports older than 30 days are pruned, and the directory ignores itself
    through its own `.gitignore`. Hooks exit successfully even when something
-   goes wrong, so they can never block the agent.
+   goes wrong, so they can never block the agent, and with `--from codex` or
+   `--from gemini` they print `{}` whenever they have nothing to say, because
+   those agents parse a hook's standard output as JSON. Session ids become file
+   names through a sanitized prefix plus a hash of the original id, so two
+   sessions never share a log or a report.
 
 Find the newest transcript for the current project without knowing its path:
 
@@ -407,8 +412,8 @@ Codex appends its notification payload as the last argument. The payload
 carries the working directory and thread identifier but no transcript path, so
 `--from codex` selects the rollout under `$CODEX_HOME/sessions` whose recorded
 directory equals the working directory and whose session identifier equals the
-thread. The report lands in `.agent-thanks/reports/<thread>.json`; review it
-later with `agent-thanks star` on that file.
+thread. The report lands in `.agent-thanks/reports/<thread>-<hash>.json`; review
+it later with `agent-thanks star` on that file.
 
 Gemini CLI can run the stop hook from an `AfterAgent` hook in
 `~/.gemini/settings.json`, and `--from gemini` reads its transcripts under
@@ -421,9 +426,6 @@ Gemini CLI can run the stop hook from an `AfterAgent` hook in
   }
 }
 ```
-
-With `--from gemini` the hooks answer `{}` whenever they have nothing to say,
-because Gemini parses a hook's standard output as JSON.
 
 Gemini CLI currently yields review-only references. Its shell tool records a
 failure explicitly (an `Exit Code` line and `isError`) but marks success only
