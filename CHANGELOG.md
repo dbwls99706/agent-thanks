@@ -9,8 +9,9 @@ All notable changes to this project will be documented in this file.
   signal and no failure signal, the tool call must be a single logical line,
   and the statement must be a single command or an `&&` chain whose other
   segments are trivially safe (`cd`, `mkdir`, `echo`, and similar; `set`,
-  `export`, and variable assignments are not, because `set -n` skips execution
-  and an assignment can redirect `PATH`). Failed,
+  `export`, `printf`, variable assignments, and `env` wrappers with
+  assignments or options are not, because `set -n` skips execution and an
+  assignment can redirect `PATH` to a fake `git`). Failed,
   conflicting, unjudgeable, and missing results, transcripts without results,
   multi-line invocations, and compound statements such as
   `git clone URL || true` or `eval 'exit 0' && git clone URL` stay references,
@@ -21,10 +22,11 @@ All notable changes to this project will be documented in this file.
   pairing recognized shell-tool calls in the supported structured formats
   (Claude Code, Codex CLI, and Gemini CLI records) with their recorded
   results. Success is read only from structured envelope fields, never from
-  program output or bare text; string envelopes are interpreted only for
-  Codex's own shell tools; several results for one call combine failure
-  first; call-shaped objects inside user or tool content are never actions.
-  Only known shell
+  program output or bare text; string envelopes are interpreted only for Codex
+  call records of Codex's own `shell` and `exec_command` tools; several
+  results for one call combine failure first; a call id reused for different
+  calls attributes no result; call-shaped objects inside user or tool content
+  are never actions. Only known shell
   tools count; other tools contribute references. In agent prose only
   line-initial provenance statements count as use. Tool output, user prompts,
   and hidden reasoning are never actions.
@@ -44,12 +46,15 @@ All notable changes to this project will be documented in this file.
   entry points for agent hooks. `record` keeps a structured per-session log
   with each command's recorded status and basis, treating the Claude Code
   success-only post-tool event as a success basis only when started with
-  `--from claude-code`; `stop` treats that log as the authority for actions,
-  combining several entries for one call failure first, overriding the
-  transcript's own result only when call id and command both match, leaving
-  mismatches and transcript commands the log never saw unconfirmed, promotes
-  successful entries only, writes per-session reports, and announces newly
-  verified repositories once per session, without ever changing a Star. With
+  `--from claude-code` and only for a `PostToolUse` payload, never recording
+  pre-tool events; every entry carries a schema marker, the agent, the event,
+  and the tool call id, and a success counts only when the entry is complete.
+  `stop` treats that log as the authority for actions, combining several
+  entries for one call failure first, overriding the transcript's own result
+  only when call id and exact command text both match, leaving mismatches and
+  transcript commands the log never saw unconfirmed, promotes successful
+  entries only, writes per-session reports, and announces newly verified
+  repositories once per session, without ever changing a Star. With
   `--from gemini` the hooks answer `{}` when silent, as Gemini's hook contract
   requires.
 - Bundle a Claude Code plugin marketplace with hooks and a `/thanks` command.

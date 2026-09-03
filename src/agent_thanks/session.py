@@ -354,8 +354,10 @@ def _strip_command_wrappers(tokens: list[str]) -> list[str]:
             return []
     if remaining and remaining[0].casefold() == "env":
         remaining.pop(0)
-        while remaining and "=" in remaining[0] and not remaining[0].startswith("-"):
-            remaining.pop(0)
+        if remaining and ("=" in remaining[0] or remaining[0].startswith("-")):
+            # ``env PATH=... git`` or ``env -i git`` changes the environment the
+            # command resolves in, so its exit status proves nothing about git.
+            return []
     return remaining
 
 
@@ -883,7 +885,7 @@ class CommandAnalysis:
     pure: bool
 
 
-_CHAIN_PREFIX_ALLOWLIST = {"cd", "pushd", "popd", "mkdir", "true", "echo", "printf", "pwd"}
+_CHAIN_PREFIX_ALLOWLIST = {"cd", "pushd", "popd", "mkdir", "true", "echo", "pwd"}
 
 
 def analyze_command_line(line: str) -> CommandAnalysis:
@@ -908,10 +910,10 @@ def _is_safe_chain_segment(segment: list[str]) -> bool:
 
     Anything else makes the chain impure: control-flow builtins (``exit``,
     ``exec``, ``eval``, ``source``, ``builtin``), ``set`` (``set -n`` stops
-    execution while exiting 0), ``export`` and variable assignments (they can
-    redirect ``PATH`` to a fake ``git``), and arbitrary executables. A successful
-    exit status can then no longer prove that the repository command ran and
-    succeeded.
+    execution while exiting 0), ``export``, ``printf -v``, and variable
+    assignments (they can redirect ``PATH`` to a fake ``git``), and arbitrary
+    executables. A successful exit status can then no longer prove that the
+    repository command ran and succeeded.
     """
     command = _strip_command_wrappers(segment)
     if not command:
@@ -969,6 +971,7 @@ OUTCOME_UNKNOWN = "unknown"
 OUTCOME_MISSING = "missing"
 OUTCOME_UNCONFIRMED = "unconfirmed"
 OUTCOME_CONFLICT = "conflict"
+OUTCOME_AMBIGUOUS = "ambiguous"
 _PROMOTING_OUTCOMES = {OUTCOME_OK, OUTCOME_ATTESTED}
 
 PROVENANCE_DETAIL = "Session states that code was adapted from this repository"
@@ -992,8 +995,12 @@ _DEMOTED_DETAILS = {
         "verify actual reuse"
     ),
     OUTCOME_CONFLICT: (
-        "Session ran a repository command, but the hook log recorded a different command "
-        "for the same tool call; verify actual reuse"
+        "Session ran a repository command, but the hook log and the transcript disagree about "
+        "the command behind this tool call; verify actual reuse"
+    ),
+    OUTCOME_AMBIGUOUS: (
+        "Session reused one tool call identifier for different calls, so no result can be "
+        "attributed to this command; verify actual reuse"
     ),
 }
 COMPOUND_DETAIL = (

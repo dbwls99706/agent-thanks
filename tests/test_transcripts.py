@@ -338,10 +338,19 @@ class ResultStatusTests(unittest.TestCase):
                 {"type": "function_call_output", "call_id": "c4", "output": json.dumps({"output": "", "metadata": {"exit_code": 0}})},
             ])
             write_jsonl(path, records)
+            records.extend([
+                {"type": "function_call", "name": "shell", "call_id": "c5", "arguments": json.dumps({"command": "cd /tmp && git clone https://github.com/hook/newline"})},
+                {"type": "function_call_output", "call_id": "c5", "output": json.dumps({"output": "", "metadata": {"exit_code": 0}})},
+                {"type": "function_call", "name": "shell", "call_id": "c6", "arguments": json.dumps({"command": "git clone https://github.com/hook/no-command"})},
+                {"type": "function_call_output", "call_id": "c6", "output": json.dumps({"output": "", "metadata": {"exit_code": 0}})},
+            ])
+            write_jsonl(path, records)
             authoritative = {
                 "c1": HookStatus("error", "git clone https://github.com/hook/failed"),
-                "c2": HookStatus("ok", "git  clone https://github.com/hook/agreed"),
+                "c2": HookStatus("ok", "git clone https://github.com/hook/agreed"),
                 "c4": HookStatus("ok", "echo ok"),
+                "c5": HookStatus("ok", "cd /tmp &&\ngit clone https://github.com/hook/newline"),
+                "c6": HookStatus("ok", None),
             }
             evidence = evidence_by_repository(
                 scan_transcript_evidence(path, "r.jsonl", authoritative=authoritative)
@@ -351,7 +360,55 @@ class ResultStatusTests(unittest.TestCase):
         self.assertEqual(evidence["hook/unseen"].confidence, "low")
         self.assertIn("hook log did not confirm", evidence["hook/unseen"].detail)
         self.assertEqual(evidence["hook/mismatch"].confidence, "low")
-        self.assertIn("different command", evidence["hook/mismatch"].detail)
+        self.assertIn("disagree about the command", evidence["hook/mismatch"].detail)
+        self.assertEqual(evidence["hook/newline"].confidence, "low")
+        self.assertIn("disagree about the command", evidence["hook/newline"].detail)
+        self.assertEqual(evidence["hook/no-command"].confidence, "low")
+
+    def test_a_reused_call_id_attributes_no_result(self) -> None:
+        envelope = json.dumps({"output": "Cloning...", "metadata": {"exit_code": 0}})
+        records = [
+            {"type": "function_call", "name": "shell", "call_id": "dup", "arguments": json.dumps({"command": "git clone https://github.com/dup/first"})},
+            {"type": "function_call", "name": "shell", "call_id": "dup", "arguments": json.dumps({"command": "git clone https://github.com/dup/second"})},
+            {"type": "function_call_output", "call_id": "dup", "output": envelope},
+            {"type": "function_call", "name": "shell", "call_id": "twice", "arguments": json.dumps({"command": "git clone https://github.com/dup/same"})},
+            {"type": "function_call", "name": "shell", "call_id": "twice", "arguments": json.dumps({"command": "git clone https://github.com/dup/same"})},
+            {"type": "function_call_output", "call_id": "twice", "output": envelope},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rollout.jsonl"
+            write_jsonl(path, records)
+            evidence = evidence_by_repository(scan_transcript_evidence(path, "rollout.jsonl"))
+            hooked = evidence_by_repository(
+                scan_transcript_evidence(path, "rollout.jsonl", authoritative={"dup": HookStatus("ok", "git clone https://github.com/dup/first")})
+            )
+        self.assertEqual(evidence["dup/first"].confidence, "low")
+        self.assertEqual(evidence["dup/second"].confidence, "low")
+        self.assertIn("reused one tool call identifier", evidence["dup/first"].detail)
+        self.assertEqual(hooked["dup/first"].confidence, "low")
+        # An identical record repeated (a resumed rollout) is one call, not a conflict.
+        self.assertEqual(evidence["dup/same"].confidence, "high")
+
+    def test_string_envelopes_need_a_codex_call_record_of_a_codex_shell_tool(self) -> None:
+        envelope = json.dumps({"output": "Cloning...", "metadata": {"exit_code": 0}})
+        records = [
+            {"type": "function_call", "name": "run_shell_command", "call_id": "a1", "arguments": json.dumps({"command": "git clone https://github.com/alias/run-shell"})},
+            {"type": "function_call_output", "call_id": "a1", "output": envelope},
+            {"type": "function_call", "name": "bash", "call_id": "a2", "arguments": json.dumps({"command": "git clone https://github.com/alias/bash"})},
+            {"type": "function_call_output", "call_id": "a2", "output": "Chunk ID: x\nWall time: 0.1 seconds\nProcess exited with code 0\nOutput:\nCloning..."},
+            {"type": "tool_use", "id": "a3", "name": "shell", "input": {"command": "git clone https://github.com/alias/tool-use"}},
+            {"type": "function_call_output", "call_id": "a3", "output": envelope},
+            {"type": "function_call", "name": "shell", "call_id": "a4", "arguments": json.dumps({"command": "git clone https://github.com/alias/genuine"})},
+            {"type": "function_call_output", "call_id": "a4", "output": envelope},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rollout.jsonl"
+            write_jsonl(path, records)
+            evidence = evidence_by_repository(scan_transcript_evidence(path, "rollout.jsonl"))
+        for repository in ("alias/run-shell", "alias/bash", "alias/tool-use"):
+            self.assertEqual(evidence[repository].confidence, "low", repository)
+            self.assertIn("cannot be judged", evidence[repository].detail, repository)
+        self.assertEqual(evidence["alias/genuine"].confidence, "high")
 
     def test_codex_custom_tool_calls_are_recognized(self) -> None:
         records = [
@@ -442,6 +499,11 @@ class SuccessAttributionTests(unittest.TestCase):
             ("source ./env.sh && git clone https://github.com/acme/repo", False, False, "compound"),
             ("unknown && git clone https://github.com/acme/repo", False, False, "compound"),
             ("set -n && git clone https://github.com/acme/repo", False, False, "compound"),
+            ("printf -v PATH /tmp/fake && git clone https://github.com/acme/repo", False, False, "compound"),
+            ("env PATH=/tmp/fake git clone https://github.com/acme/repo", False, False, "referenced"),
+            ("env -i git clone https://github.com/acme/repo", False, False, "referenced"),
+            ("PATH=/tmp/fake git clone https://github.com/acme/repo", False, False, "referenced"),
+            ("env git clone https://github.com/acme/repo", False, True, "completed successfully"),
             ("PATH=/tmp/fake && git clone https://github.com/acme/repo", False, False, "compound"),
             ("export GIT_DIR=/x && git clone https://github.com/acme/repo", False, False, "compound"),
             ("git clone https://github.com/acme/repo\ntrue", False, False, "multi-line"),

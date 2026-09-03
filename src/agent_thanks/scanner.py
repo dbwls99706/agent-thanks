@@ -2,18 +2,21 @@ from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
 import subprocess
-from typing import Iterable, Mapping
+from typing import Iterable
 
 from .manifests import Dependency, is_supported_manifest, parse_manifest
 from .models import Evidence, Report, UnresolvedDependency, merge_candidates
 from .resolver import PackageRepositoryResolver
 from .session import OUTCOME_ATTESTED, OUTCOME_MISSING, scan_session_evidence
 from .transcripts import (
-    HookStatus,
     is_hook_log,
     is_transcript,
+    load_hook_log_statuses,
+    merge_hook_statuses,
+    merge_transcript_calls,
     scan_hook_log_evidence,
     scan_transcript_evidence,
+    transcript_calls,
 )
 
 
@@ -47,12 +50,7 @@ class ProjectScanner:
         self.resolver = resolver or PackageRepositoryResolver()
         self.trust_sessions = trust_sessions
 
-    def scan(
-        self,
-        session_files: Iterable[Path] = (),
-        *,
-        transcript_overrides: Mapping[str, HookStatus] | None = None,
-    ) -> Report:
+    def scan(self, session_files: Iterable[Path] = ()) -> Report:
         evidence_items: list[tuple[str, Evidence]] = []
         unresolved: list[UnresolvedDependency] = []
         baseline_identities = self._baseline_dependency_identities()
@@ -107,22 +105,30 @@ class ProjectScanner:
                     )
                 )
 
-        for session_file in session_files:
-            path = Path(session_file)
-            if str(session_file) != "-" and is_hook_log(path):
-                evidence_items.extend(scan_hook_log_evidence(path, str(session_file)))
-                continue
-            if str(session_file) != "-" and is_transcript(path):
-                evidence_items.extend(
-                    scan_transcript_evidence(
-                        path, str(session_file), authoritative=transcript_overrides
-                    )
-                )
-                continue
-            text = self._read_session(session_file)
-            evidence_items.extend(
-                self._scan_session(text, str(session_file), trusted=self.trust_sessions)
-            )
+        # Hook logs are the authority for the tool calls they record: their statuses
+        # override the transcripts' own results for the same call ids, and a call
+        # the two kinds of source disagree about is demoted on both sides.
+        sources = [(session_file, Path(session_file)) for session_file in session_files]
+        hook_logs = [(name, path) for name, path in sources if str(name) != "-" and is_hook_log(path)]
+        transcripts = [
+            (name, path)
+            for name, path in sources
+            if str(name) != "-" and (name, path) not in hook_logs and is_transcript(path)
+        ]
+        overrides = (
+            merge_hook_statuses(load_hook_log_statuses(path) for _, path in hook_logs) if hook_logs else None
+        )
+        calls = (
+            merge_transcript_calls(transcript_calls(path) for _, path in transcripts) if transcripts else None
+        )
+        for name, path in sources:
+            if (name, path) in hook_logs:
+                evidence_items.extend(scan_hook_log_evidence(path, str(name), transcript_calls=calls))
+            elif (name, path) in transcripts:
+                evidence_items.extend(scan_transcript_evidence(path, str(name), authoritative=overrides))
+            else:
+                text = self._read_session(name)
+                evidence_items.extend(self._scan_session(text, str(name), trusted=self.trust_sessions))
 
         candidates = merge_candidates(evidence_items)
         unresolved = sorted(

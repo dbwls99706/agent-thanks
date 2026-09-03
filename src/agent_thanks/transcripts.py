@@ -26,6 +26,7 @@ from typing import Any, Iterable, Iterator, Mapping, NamedTuple
 
 from .models import Evidence
 from .session import (
+    OUTCOME_AMBIGUOUS,
     OUTCOME_CONFLICT,
     OUTCOME_ERROR,
     OUTCOME_MISSING,
@@ -92,6 +93,12 @@ _HEADER_LINE_PATTERN = re.compile(
     r"^(?:[A-Za-z][A-Za-z _-]{0,40}:(?:\s.*)?|Process (?:exited with code -?\d+|running with session ID \S+))\s*$"
 )
 _MAX_DEPTH = 32
+CODEX_SHELL_TOOLS = frozenset({"shell", "exec_command"})
+_CODEX_CALL_TYPES = frozenset({"function_call", "custom_tool_call"})
+_CODEX_OUTPUT_TYPES = frozenset({"function_call_output", "custom_tool_call_output"})
+HOOK_LOG_SCHEMA = "agent-thanks/hook-log/1"
+HOOK_AGENTS = frozenset({"claude-code", "codex", "gemini"})
+PROMOTING_BASES = frozenset({"exit_status", "successful_post_tool_event"})
 
 RESULT_OK = "ok"
 RESULT_ERROR = "error"
@@ -178,14 +185,16 @@ def iter_transcript_records(
 
     When ``authoritative`` is given (statuses per tool call id from a hook log),
     it replaces the transcript's own results: a command is 'ok' only if the hook
-    log says so for the same call id and the same command, a command the hook
-    log never saw is 'unconfirmed', and a call whose recorded command differs
-    from the hook log's is a 'conflict'.
+    log says so for the same call id and the identical command text, a command
+    the hook log never saw is 'unconfirmed', and a call whose recorded command
+    differs from the hook log's is a 'conflict'. A call id that the transcript
+    reuses for different calls is a 'conflict' as well.
     """
     records = load_transcript_records(path)
-    results = _index_results(records, _index_calls(records))
+    calls = _index_calls(records)
+    results = _index_results(records, calls)
     for number, record in records:
-        for kind, text, outcome in _walk(record, None, 0, results, authoritative):
+        for kind, text, outcome in _walk(record, None, 0, calls, results, authoritative):
             if text.strip():
                 yield number, kind, text, outcome
 
@@ -214,11 +223,40 @@ def scan_transcript_evidence(
     return items
 
 
+def transcript_calls(path: Path) -> dict[str, str | None]:
+    """Map each tool call id a transcript uses to the shell command behind it.
+
+    The value is ``None`` when the id is reused for different calls or belongs
+    to a call that is not a shell command, so a hook log entry with that id can
+    never agree with the transcript.
+    """
+    return {
+        call_id: info.command if info is not None else None
+        for call_id, info in _index_calls(load_transcript_records(path)).items()
+    }
+
+
+def merge_transcript_calls(maps: Iterable[Mapping[str, str | None]]) -> dict[str, str | None]:
+    """Merge call maps from several transcripts; an id they disagree about maps to ``None``."""
+    merged: dict[str, str | None] = {}
+    for calls in maps:
+        for call_id, command in calls.items():
+            if call_id in merged and merged[call_id] != command:
+                merged[call_id] = None
+            else:
+                merged.setdefault(call_id, command)
+    return merged
+
+
 HOOK_LOG_STATUSES = {RESULT_OK: OUTCOME_OK, RESULT_ERROR: OUTCOME_ERROR, RESULT_UNKNOWN: OUTCOME_UNKNOWN}
 
 
 def is_hook_log(path: Path) -> bool:
-    """Return True for a structured hook log written by ``agent-thanks hook record``."""
+    """Return True for a structured hook log written by ``agent-thanks hook record``.
+
+    The first record must carry the hook log schema marker; a JSON Lines file
+    that merely happens to have ``command`` and ``status`` keys is not one.
+    """
     try:
         with path.open("r", encoding="utf-8", errors="replace") as handle:
             for line in handle:
@@ -229,27 +267,39 @@ def is_hook_log(path: Path) -> bool:
                     record = json.loads(line)
                 except json.JSONDecodeError:
                     return False
-                return isinstance(record, dict) and {"command", "status", "basis"} <= set(record)
+                return isinstance(record, dict) and record.get("schema") == HOOK_LOG_SCHEMA
     except OSError:
         return False
     return False
 
 
 class HookStatus(NamedTuple):
-    """Combined status of one tool call in a hook log, with the command it recorded."""
+    """Combined status of one tool call in a hook log, with the exact command it recorded."""
 
     status: str
     command: str | None
 
 
-def normalize_command(command: str) -> str:
-    """Collapse whitespace so the same command matches across records."""
-    return " ".join(command.split())
-
-
 def load_hook_log_statuses(path: Path) -> dict[str, HookStatus]:
     """Return the combined status and command per tool call id recorded in a hook log."""
     return _combine_hook_log(_hook_log_entries(path))
+
+
+def merge_hook_statuses(maps: Iterable[Mapping[str, HookStatus]]) -> dict[str, HookStatus]:
+    """Merge statuses from several hook logs; a call they disagree about is never ok."""
+    merged: dict[str, HookStatus] = {}
+    for statuses in maps:
+        for call_id, entry in statuses.items():
+            if call_id not in merged:
+                merged[call_id] = entry
+                continue
+            previous = merged[call_id]
+            status = combine_statuses((previous.status, entry.status))
+            if previous.command != entry.command:
+                merged[call_id] = HookStatus(RESULT_ERROR if status == RESULT_ERROR else RESULT_UNKNOWN, None)
+            else:
+                merged[call_id] = HookStatus(status, entry.command)
+    return merged
 
 
 def combine_statuses(statuses: Iterable[str]) -> str:
@@ -264,31 +314,60 @@ def combine_statuses(statuses: Iterable[str]) -> str:
     return RESULT_UNKNOWN
 
 
+def hook_entry_status(entry: Mapping[str, Any]) -> str:
+    """Return the status one hook log entry may contribute.
+
+    A recorded failure always counts. A recorded success counts only when the
+    entry is complete: it names a known agent, a promoting basis, a non-empty
+    tool call id, and a non-empty command. Anything else is unknown.
+    """
+    status = entry.get("status")
+    if status == RESULT_ERROR:
+        return RESULT_ERROR
+    call_id = entry.get("tool_call_id")
+    command = entry.get("command")
+    complete = (
+        status == RESULT_OK
+        and entry.get("agent") in HOOK_AGENTS
+        and entry.get("basis") in PROMOTING_BASES
+        and isinstance(call_id, str)
+        and bool(call_id)
+        and isinstance(command, str)
+        and bool(command.strip())
+    )
+    return RESULT_OK if complete else RESULT_UNKNOWN
+
+
 def combine_hook_entries(entries: Iterable[Mapping[str, Any]]) -> HookStatus:
     """Combine every hook log entry recorded for one tool call.
 
-    Statuses combine failure first. Entries that disagree about the command
-    they ran contradict each other, so their combined status is never ok and
-    no single command is kept for them.
+    Statuses combine failure first. Entries that disagree about the exact
+    command they ran contradict each other, so their combined status is never
+    ok and no command is kept for them; a call without a command is never ok.
     """
     items = list(entries)
-    status = combine_statuses(str(entry.get("status")) for entry in items)
+    status = combine_statuses(hook_entry_status(entry) for entry in items)
     commands: set[str] = set()
     for entry in items:
         command = entry.get("command")
         if isinstance(command, str) and command.strip():
-            commands.add(normalize_command(command))
-    if len(commands) > 1:
+            commands.add(command)
+    if len(commands) != 1:
         return HookStatus(RESULT_ERROR if status == RESULT_ERROR else RESULT_UNKNOWN, None)
-    return HookStatus(status, next(iter(commands), None))
+    return HookStatus(status, next(iter(commands)))
 
 
-def scan_hook_log_evidence(path: Path, source: str) -> list[tuple[str, Evidence]]:
+def scan_hook_log_evidence(
+    path: Path, source: str, *, transcript_calls: Mapping[str, str | None] | None = None
+) -> list[tuple[str, Evidence]]:
     """Classify hook log entries; only calls whose every entry recorded success can count as use.
 
     Entries that share a tool call id are judged by their combined status, so a
     call recorded as failed once stays a reference even if a later entry for the
-    same call recorded success.
+    same call recorded success. An entry without a tool call id never counts.
+    When the transcripts scanned alongside the log know the call id
+    (``transcript_calls``), the entry counts only if they recorded the identical
+    command for it; a disagreement or a reused id is a conflict.
     """
     entries = _hook_log_entries(path)
     combined = _combine_hook_log(entries)
@@ -299,10 +378,16 @@ def scan_hook_log_evidence(path: Path, source: str) -> list[tuple[str, Evidence]
             continue
         call_id = entry.get("tool_call_id")
         if isinstance(call_id, str) and call_id:
-            status = combined[call_id].status
+            outcome = HOOK_LOG_STATUSES.get(combined[call_id].status, OUTCOME_UNKNOWN)
+            if transcript_calls is not None and call_id in transcript_calls:
+                recorded = transcript_calls[call_id]
+                if recorded is None:
+                    outcome = OUTCOME_AMBIGUOUS
+                elif recorded != command:
+                    outcome = OUTCOME_CONFLICT
         else:
-            status = str(entry.get("status"))
-        outcome = HOOK_LOG_STATUSES.get(status, OUTCOME_UNKNOWN)
+            status = RESULT_ERROR if entry.get("status") == RESULT_ERROR else RESULT_UNKNOWN
+            outcome = HOOK_LOG_STATUSES.get(status, OUTCOME_UNKNOWN)
         items.extend(
             scan_session_evidence(
                 command, f"{source}:{number}", line_labels=False, outcome=outcome, single_statement=True
@@ -312,6 +397,7 @@ def scan_hook_log_evidence(path: Path, source: str) -> list[tuple[str, Evidence]
 
 
 def _hook_log_entries(path: Path) -> list[tuple[int, dict[str, Any]]]:
+    """Return the schema-marked entries of a hook log with their line numbers."""
     entries: list[tuple[int, dict[str, Any]]] = []
     for number, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), start=1):
         line = line.strip()
@@ -321,7 +407,7 @@ def _hook_log_entries(path: Path) -> list[tuple[int, dict[str, Any]]]:
             entry = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if isinstance(entry, dict):
+        if isinstance(entry, dict) and entry.get("schema") == HOOK_LOG_SCHEMA:
             entries.append((number, entry))
     return entries
 
@@ -475,30 +561,65 @@ def _head_records(path: Path, *, limit: int) -> list[Any]:
     return records
 
 
-def _index_calls(records: Iterable[tuple[int, Any]]) -> dict[str, str]:
-    """Map tool call identifiers to tool names, read from envelope positions only."""
-    tools: dict[str, str] = {}
+class CallInfo(NamedTuple):
+    """A tool call seen at an envelope position: record kind, tool name, parameters, and shell command."""
+
+    kind: str
+    tool: str
+    parameters: str
+    command: str | None
+
+
+def _index_calls(records: Iterable[tuple[int, Any]]) -> dict[str, CallInfo | None]:
+    """Map tool call identifiers to the call behind them, read from envelope positions only.
+
+    An identifier that the transcript reuses for different calls (another tool,
+    other parameters, or another record kind) maps to ``None``: no result can
+    then be attributed to any of them.
+    """
+    calls: dict[str, CallInfo | None] = {}
     for _, record in records:
         for node in _result_envelopes(record):
             call = _call_of(node)
-            if call is not None and call[2] is not None:
-                tools.setdefault(call[2], call[0])
-    return tools
+            if call is None or call[2] is None:
+                continue
+            name, parameters, call_id = call
+            command = _command_of(parameters) if is_shell_tool(name) else None
+            info = CallInfo(
+                _call_kind(node), name, json.dumps(parameters, sort_keys=True, default=str), command
+            )
+            if call_id not in calls:
+                calls[call_id] = info
+            elif calls[call_id] != info:
+                calls[call_id] = None
+    return calls
 
 
-def _index_results(records: Iterable[tuple[int, Any]], tools: Mapping[str, str]) -> dict[str, str]:
+def _call_kind(node: dict[str, Any]) -> str:
+    node_type = node.get("type")
+    if node_type in {"tool_use"} | _CODEX_CALL_TYPES:
+        return str(node_type)
+    if any(isinstance(node.get(wrapper), dict) for wrapper in ("functionCall", "function_call", "function")):
+        return "functionCall"
+    return "generic"
+
+
+def _index_results(
+    records: Iterable[tuple[int, Any]], calls: Mapping[str, CallInfo | None]
+) -> dict[str, str]:
     """Map tool call identifiers to a combined status from recorded result envelopes.
 
     Only envelope positions are read: a record, its ``payload``, and the items
     of its message ``content`` or ``parts`` lists. Result-shaped objects nested
     inside program output are never indexed. Several results for one call are
-    combined with failure first. ``tools`` names the tool behind each call so a
-    string result is interpreted only for the tools whose envelope is known.
+    combined with failure first. ``calls`` identifies the call behind each
+    result so a string result is interpreted only for the Codex records whose
+    envelope is known.
     """
     statuses: dict[str, list[str]] = {}
     for _, record in records:
         for node in _result_envelopes(record):
-            entry = _result_of(node, tools)
+            entry = _result_of(node, calls)
             if entry is not None:
                 statuses.setdefault(entry[0], []).append(entry[1])
     return {call_id: combine_statuses(values) for call_id, values in statuses.items()}
@@ -672,20 +793,23 @@ def _output_failures(output: Any, depth: int) -> int:
     return 0
 
 
-def _result_of(node: dict[str, Any], tools: Mapping[str, str]) -> tuple[str, str] | None:
+def _result_of(
+    node: dict[str, Any], calls: Mapping[str, CallInfo | None]
+) -> tuple[str, str] | None:
     """Pair a recorded result with its call identifier; every format uses the same judge."""
     node_type = node.get("type")
     if node_type == "tool_result" and isinstance(node.get("tool_use_id"), str):
         return node["tool_use_id"], result_status(node)
-    if node_type in {"function_call_output", "custom_tool_call_output"} and isinstance(
-        node.get("call_id"), str
-    ):
-        # Codex writes the output envelope itself only for its shell tools; a string
-        # result of any other tool is program output and never proves success.
+    if node_type in _CODEX_OUTPUT_TYPES and isinstance(node.get("call_id"), str):
+        # Codex writes the output envelope itself only for its own shell tools, and
+        # only a Codex call record proves that this is such a call. Any other string
+        # result is program output and never proves success.
         call_id = node["call_id"]
-        return call_id, result_status(
-            node.get("output"), codex_envelope=is_shell_tool(tools.get(call_id))
+        info = calls.get(call_id)
+        codex_envelope = (
+            info is not None and info.kind in _CODEX_CALL_TYPES and info.tool in CODEX_SHELL_TOOLS
         )
+        return call_id, result_status(node.get("output"), codex_envelope=codex_envelope)
     response = node.get("functionResponse")
     if isinstance(response, dict) and isinstance(response.get("id"), str):
         return response["id"], result_status(response.get("response"))
@@ -696,6 +820,7 @@ def _walk(
     node: Any,
     role: str | None,
     depth: int,
+    calls: Mapping[str, CallInfo | None],
     results: dict[str, str],
     authoritative: Mapping[str, HookStatus] | None,
 ) -> list[tuple[str, str, str | None]]:
@@ -704,7 +829,7 @@ def _walk(
         return found
     if isinstance(node, list):
         for item in node:
-            found.extend(_walk(item, role, depth + 1, results, authoritative))
+            found.extend(_walk(item, role, depth + 1, calls, results, authoritative))
         return found
     if not isinstance(node, dict):
         return found
@@ -718,9 +843,8 @@ def _walk(
         if is_shell_tool(name):
             command = _command_of(parameters)
             if command:
-                found.append(
-                    ("command", command, _command_outcome(call_id, command, results, authoritative))
-                )
+                outcome = _command_outcome(call_id, command, calls, results, authoritative)
+                found.append(("command", command, outcome))
         else:
             parameter_text = _parameter_text(parameters)
             if parameter_text:
@@ -734,25 +858,36 @@ def _walk(
         if key in _OUTPUT_KEYS:
             continue
         if isinstance(value, (dict, list)):
-            found.extend(_walk(value, role, depth + 1, results, authoritative))
+            found.extend(_walk(value, role, depth + 1, calls, results, authoritative))
     return found
 
 
 def _command_outcome(
     call_id: str | None,
     command: str,
+    calls: Mapping[str, CallInfo | None],
     results: dict[str, str],
     authoritative: Mapping[str, HookStatus] | None,
 ) -> str:
+    """Decide what a transcript command may claim; every condition must hold for a success.
+
+    The call needs an identifier that the transcript uses for this call alone.
+    With a hook log, the log must hold that identifier with the identical
+    command text and a combined ok status. Without one, the transcript's own
+    combined result for the identifier must be ok.
+    """
+    if call_id is None:
+        return OUTCOME_UNCONFIRMED if authoritative is not None else OUTCOME_MISSING
+    if call_id in calls and calls[call_id] is None:
+        return OUTCOME_AMBIGUOUS
     if authoritative is not None:
-        entry = authoritative.get(call_id) if call_id is not None else None
+        entry = authoritative.get(call_id)
         if entry is None:
             return OUTCOME_UNCONFIRMED
-        if entry.command is not None and normalize_command(entry.command) != normalize_command(command):
+        if entry.command is None or entry.command != command:
             return OUTCOME_CONFLICT
         return HOOK_LOG_STATUSES.get(entry.status, OUTCOME_UNCONFIRMED)
-    status = results.get(call_id) if call_id is not None else None
-    return HOOK_LOG_STATUSES.get(status or "", OUTCOME_MISSING)
+    return HOOK_LOG_STATUSES.get(results.get(call_id, ""), OUTCOME_MISSING)
 
 
 def _role_of(node: dict[str, Any], inherited: str | None) -> str | None:

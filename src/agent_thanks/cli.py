@@ -21,8 +21,7 @@ from .transcripts import (
     RESULT_OK,
     RESULT_UNKNOWN,
     is_shell_tool,
-    HookStatus,
-    load_hook_log_statuses,
+    HOOK_LOG_SCHEMA,
     locate_transcript,
     result_status,
     transcript_locations,
@@ -31,6 +30,7 @@ from .transcripts import (
 
 DEFAULT_REPORT = ".agent-thanks-report.json"
 STATE_DIRECTORY = ".agent-thanks"
+POST_TOOL_EVENTS = frozenset({"PostToolUse", "AfterTool"})
 SESSION_LOG_MAX_AGE_SECONDS = 30 * 24 * 3600
 AGENTS = ("claude-code", "codex", "gemini")
 
@@ -597,22 +597,25 @@ def _hook_outcome(payload: dict[str, object], agent: str | None) -> tuple[str, s
 
     An explicit result in ``tool_response`` always wins. A text or JSON string
     response is interpreted as a Codex envelope only with ``--from codex``.
-    Without an explicit result, only the Claude Code contract, whose post-tool
-    event fires after a successful tool run, justifies recording success, and
-    only when ``--from claude-code`` was passed explicitly; every other case
-    records ``unknown``.
+    Without an explicit result, only the Claude Code contract, whose
+    ``PostToolUse`` event fires after a successful tool run, justifies recording
+    success, and only when ``--from claude-code`` was passed explicitly and the
+    payload names that exact event; every other case records ``unknown``.
     """
     status = result_status(payload.get("tool_response"), codex_envelope=agent == "codex")
     if status == RESULT_OK:
         return RESULT_OK, "exit_status"
     if status == RESULT_ERROR:
         return RESULT_ERROR, "tool_response"
-    if agent == "claude-code":
+    if agent == "claude-code" and payload.get("hook_event_name") == "PostToolUse":
         return RESULT_OK, "successful_post_tool_event"
     return RESULT_UNKNOWN, "no_result"
 
 
 def _hook_record(payload: dict[str, object], *, agent: str | None) -> None:
+    event = payload.get("hook_event_name")
+    if event is not None and event not in POST_TOOL_EVENTS:
+        return None  # a pre-tool or unrelated event says nothing about a completed command
     tool_name = payload.get("tool_name") or payload.get("tool")
     tool_input = payload.get("tool_input") or payload.get("input")
     if not is_shell_tool(tool_name) or not isinstance(tool_input, dict):
@@ -622,7 +625,9 @@ def _hook_record(payload: dict[str, object], *, agent: str | None) -> None:
         return None
     status, basis = _hook_outcome(payload, agent)
     entry = {
+        "schema": HOOK_LOG_SCHEMA,
         "agent": agent,
+        "event": event,
         "session_id": _session_id(payload),
         "tool_call_id": payload.get("tool_use_id") or payload.get("tool_call_id"),
         "command": command,
@@ -645,16 +650,14 @@ def _hook_stop(
     session_id = _session_id(payload)
     _prune_state(state)
 
-    # The structured hook log is the authority for actions: each entry carries
-    # the status the hook contract established, and those statuses override the
-    # transcript's own results for the same tool call. The transcript adds prose
-    # provenance; a transcript command the hook log never saw stays unconfirmed.
+    # The structured hook log is the authority for actions: the scanner reads its
+    # statuses as overrides for the transcript's own results of the same tool
+    # calls and demotes whatever the two sources disagree about. The transcript
+    # adds prose provenance; a command the hook log never saw stays unconfirmed.
     sources: list[Path] = []
-    overrides: dict[str, HookStatus] | None = None
     log = _session_log(state, session_id)
     if log.is_file():
         sources.append(log)
-        overrides = load_hook_log_statuses(log)
     transcript = payload.get("transcript_path")
     if isinstance(transcript, str) and Path(transcript).is_file():
         sources.append(Path(transcript))
@@ -668,9 +671,7 @@ def _hook_stop(
         return None
 
     resolver = PackageRepositoryResolver(offline=offline)
-    report = ProjectScanner(root, base="HEAD", resolver=resolver).scan(
-        sources, transcript_overrides=overrides
-    )
+    report = ProjectScanner(root, base="HEAD", resolver=resolver).scan(sources)
     report_path = _report_path(state, session_id)
     report.write(report_path)
     latest = state / "report.json"

@@ -149,7 +149,9 @@ Session commands that can count as use:
 
 A command counts only when a recorded success belongs to it. The statement must
 be a single command, or a chain joined only by `&&` whose other segments are
-trivially safe (`cd`, `mkdir`, `export`, and similar). `git clone URL || true`,
+trivially safe (`cd`, `mkdir`, `echo`, and similar; not `set`, `export`,
+`printf`, or a variable assignment). `env PATH=... git clone URL`,
+`git clone URL || true`,
 `git clone URL; echo ok`, `git clone URL | tee log`, `git clone URL &`,
 `eval 'exit 0' && git clone URL`, `git clone URL && make`, and a tool call that
 runs several lines can exit successfully while the clone failed or never ran,
@@ -250,9 +252,11 @@ ways, and neither interrupts the agent or changes a Star:
    a known shell tool (`Bash`, `shell`, `exec_command`, `run_shell_command`,
    and similar) that the agent itself called executed it, the transcript
    records an exact success for that call in the result envelope (`is_error`
-   equal to `false` or an exit code of 0 in a result object, or, for Codex's
-   own shell tools only, the exit code in the JSON or header envelope Codex
-   writes ahead of the program output) with no failure signal beside it, the
+   equal to `false` or an exit code of 0 in a result object, or, for a Codex
+   call record of Codex's own `shell` or `exec_command` tool only, the exit
+   code in the JSON or header envelope Codex writes ahead of the program
+   output) with no failure signal beside it, the call id is used for that call
+   alone, the
    call is a single logical line, and the statement is a single command or an
    `&&` chain whose other segments are trivially safe (`cd`, `mkdir`, `echo`,
    and similar). Program output and bare text can never supply a success
@@ -273,13 +277,18 @@ ways, and neither interrupts the agent or changes a Star:
    explicit result in the hook payload always decides; without one, the entry
    is `unknown` unless the hook runs with `--from claude-code`, whose post-tool
    event fires only after a successful run. The contract is never inferred
-   from the payload. `agent-thanks hook stop` reads this log as the authority
-   for actions: several entries for one tool call combine failure first, the
-   log's status overrides the transcript's own result for a call only when the
-   call id and the command both match, a mismatch is a conflict, and a
-   transcript command the log never saw stays unconfirmed. The transcript is
-   merged for prose provenance and for the calls the log confirms. The hook
-   promotes only `ok` entries, writes
+   from the payload. Entries carry a schema marker, the agent, the event, and
+   the tool call id; a success counts only when the entry is complete and came
+   from a post-tool event, and a `PreToolUse` payload is never recorded.
+   `agent-thanks hook stop` reads this log as the authority for actions:
+   several entries for one tool call combine failure first, the log's status
+   overrides the transcript's own result for a call only when the call id and
+   the exact command text both match, a mismatch is a conflict that demotes
+   the hook entry and the transcript command alike, a call id the transcript
+   reuses for different calls is ambiguous, and a transcript command the log
+   never saw stays unconfirmed. The transcript is merged for prose
+   provenance and for the calls the log confirms. The hook promotes only `ok`
+   entries, writes
    `.agent-thanks/reports/<session>.json` (and a copy at
    `.agent-thanks/report.json` as the latest result), and announces
    repositories the first time they show verified use in that session. Logs

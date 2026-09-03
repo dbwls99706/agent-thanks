@@ -92,10 +92,13 @@ A command from a plain-text log stays low because the log records no result;
 add `--trust-session` only when you can vouch that the commands succeeded. A
 command from a transcript stays low when its recorded result failed, cannot be
 judged, or is missing, and when the statement combines commands with `;`,
-`||`, `|`, or `&`, because a successful exit then does not belong to the
-repository command. When a hook log exists for the session, it is the
-authority: a transcript command whose success the log did not confirm stays
-low as well. Gemini CLI commands stay low because Gemini records failures
+`||`, `|`, or `&`, wraps the command in `env` with an assignment, or chains it
+after `set`, `export`, `printf`, or a variable assignment, because a
+successful exit then does not belong to the repository command. When a hook
+log exists for the session, it is the authority: a transcript command whose
+success the log did not confirm, whose command text differs from the log's
+entry, or whose call id the transcript reuses stays low as well. Gemini CLI
+commands stay low because Gemini records failures
 explicitly but marks success only by their absence, which is never accepted.
 The evidence detail names which case applied.
 
