@@ -120,9 +120,8 @@ transcripts merely to force a high-confidence classification.
 `agent-thanks hook stop` prints a notice only when a repository shows verified
 use for the first time in that agent session; later turns of the same session
 stay silent. Check `.agent-thanks/reports/<session>-<hash>.json` (or the latest
-copy
-at `.agent-thanks/report.json`) for the full result, including references and
-unresolved dependencies. The hook also stays silent when the turn ran no shell
+copy at `.agent-thanks/report.json`) for the full result, including references
+and unresolved dependencies. The hook also stays silent when the turn ran no shell
 commands, when every clone or install in the turn failed or left no judgeable
 result (every Gemini CLI turn, until Gemini records an explicit success; with
 `--from gemini` the hook then prints `{}`), when a hook log entry and the
