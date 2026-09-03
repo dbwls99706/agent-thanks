@@ -20,9 +20,27 @@ jobs:
       - run: python -m build
       - name: Verify distributions
         run: |
+          set -eu
+          tar tzf dist/*.tar.gz > sdist-contents.txt
+          if ! grep -q 'examples/session\.jsonl$' sdist-contents.txt; then
+            echo "error: the source distribution ships no examples/session.jsonl"
+            cat sdist-contents.txt
+            exit 1
+          fi
+          python -m venv sdist-smoke
+          sdist-smoke/bin/python -m pip install dist/*.tar.gz
+          sdist-smoke/bin/agent-thanks --version
+          sdist-smoke/bin/agent-thanks demo
           python -m pip install --no-index --find-links dist agent-thanks
           agent-thanks --version
           agent-thanks demo
+          tagged="${GITHUB_REF_NAME#v}"
+          packaged="$(agent-thanks --version | awk '{print $2}')"
+          if [ "$tagged" != "$packaged" ]; then
+            echo "error: tag $GITHUB_REF_NAME does not match packaged version $packaged"
+            exit 1
+          fi
+          echo "ok: $GITHUB_REF_NAME matches the packaged version and the sdist carries the example"
       - name: Generate checksums
         run: |
           cd dist

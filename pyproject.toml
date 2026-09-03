@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-thanks"
-version = "0.5.0"
+version = "0.5.1"
 description = "Detect and thank open-source repositories meaningfully used during an AI coding session."
 readme = "README.md"
 requires-python = ">=3.10"
