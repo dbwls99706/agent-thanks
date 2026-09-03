@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Ship `examples/session.jsonl` in the source distribution again. The packaging
+  list still named the `examples/*.log` file that 0.5.0 replaced, so source
+  distributions carried no example at all; a release check now fails when the
+  bundled example is missing.
+- Name the evidence source in the README walkthrough after the transcript the
+  documented commands actually scan, instead of a file name no run produces.
+
 ## 0.5.0 - 2026-09-03
 
 - Count a session command as verified use only when its own successful

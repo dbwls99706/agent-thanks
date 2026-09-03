@@ -45,6 +45,17 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
+      - run: python -m pip install build
+      - run: python -m build --sdist --outdir sdist
+      - name: Verify the sdist ships the bundled example
+        run: |
+          tar tzf sdist/*.tar.gz > sdist-contents.txt
+          if ! grep -q 'examples/session\.jsonl$' sdist-contents.txt; then
+            echo "error: the source distribution ships no examples/session.jsonl"
+            cat sdist-contents.txt
+            exit 1
+          fi
+          echo "ok: examples/session.jsonl is in the source distribution"
       - run: python -m pip wheel --no-deps . --wheel-dir dist
       - run: python -m venv smoke
       - run: smoke/bin/python -m pip install --no-index --find-links dist agent-thanks

@@ -89,7 +89,7 @@ GitHub account: @octocat
 Each new Star requires an explicit yes. The default is No.
 
 [verified | high] https://github.com/BehaviorTree/BehaviorTree.CPP
-  - Session ran a repository-use command that completed successfully (session.jsonl:8)
+  - Session ran a repository-use command that completed successfully (agent-transcript.jsonl:2)
 Star this repository? [y/N/q] y
 
 Proceed with 1 star(s)? [y/N] y
