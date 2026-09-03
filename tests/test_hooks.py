@@ -676,7 +676,9 @@ class HookContractTests(IsolatedEnvironmentTestCase):
             self.assertFalse(candidate["recommended"])
 
 
-class SessionIdentityTests(IsolatedEnvironmentTestCase):
+class SessionScanCase(IsolatedEnvironmentTestCase):
+    """Helpers for building agent transcripts and scanning them through the CLI."""
+
     def codex_file(self, directory: str, name: str, session: str | None, call_id: str, repository: str,
                    exit_code: int | None, *, cwd: str | None = None, tail: str | None = None) -> Path:
         records = []
@@ -703,6 +705,8 @@ class SessionIdentityTests(IsolatedEnvironmentTestCase):
         return {c["repository"]: (c["recommended"], {e["confidence"] for e in c["evidence"]})
                 for c in json.loads(output)["candidates"]}
 
+
+class SessionIdentityTests(SessionScanCase):
     def test_calls_merge_only_inside_a_confirmed_session(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             a = self.codex_file(directory, "a.jsonl", "session-A", "c1", "identity/repo-a", 0)
@@ -784,6 +788,68 @@ class SessionIdentityTests(IsolatedEnvironmentTestCase):
                                 for c in [json.loads(run(["scan", "--repo", directory, "--offline", "--output", "-",
                                                           "--session", str(clean_ok), "--session", str(corrupted_failed)])[1])]
                                 for cand in c["candidates"] if cand["repository"] == "corrupt/failure" for e in cand["evidence"]))
+
+
+class UnnormalizablePathTests(SessionScanCase):
+    """A directory the platform cannot resolve identifies nothing and merges with nothing."""
+
+    BAD = "/work/" + chr(0) + "project"
+
+    def test_a_transcript_with_an_unresolvable_directory_scans_cleanly(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            evil = self.codex_file(directory, "evil.jsonl", "s", "c1", "unresolvable/alone", 0, cwd=self.BAD)
+            self.assertEqual(self.scan(directory, evil)["unresolvable/alone"], (True, {"high"}))
+
+    def test_it_neither_promotes_nor_demotes_a_healthy_transcript(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            good = self.codex_file(directory, "good.jsonl", "s", "c1", "unresolvable/healthy", 0)
+            evil = self.codex_file(directory, "evil.jsonl", "s", "c1", "unresolvable/hostile", 128, cwd=self.BAD)
+            result = self.scan(directory, good, evil)
+            # The healthy file keeps its own verdict; the unresolvable one keeps its failure.
+            self.assertEqual(result["unresolvable/healthy"], (True, {"high"}))
+            self.assertEqual(result["unresolvable/hostile"], (False, {"low"}))
+
+    def test_two_files_recording_the_same_bad_directory_never_merge(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            # Same session id, same call id, same malformed directory: still two sessions.
+            ok = self.codex_file(directory, "ok.jsonl", "s", "c1", "unresolvable/pair", 0, cwd=self.BAD)
+            pending = self.codex_file(directory, "pending.jsonl", "s", "c1", "unresolvable/pair", None, cwd=self.BAD)
+            alone = self.scan(directory, pending)["unresolvable/pair"]
+            together = self.scan(directory, ok, pending)["unresolvable/pair"]
+            # The call with no result of its own must not borrow the other file's success.
+            self.assertEqual(alone, (False, {"low"}))
+            self.assertEqual(together, (True, {"high", "low"}))
+            report = json.loads(run(["scan", "--repo", directory, "--offline", "--output", "-",
+                                     "--session", str(ok), "--session", str(pending)])[1])
+            details = [e["detail"] for c in report["candidates"] if c["repository"] == "unresolvable/pair"
+                       for e in c["evidence"] if e["confidence"] == "low"]
+            self.assertTrue(any("recorded no result" in d for d in details), details)
+
+    def test_it_never_links_to_a_hook_log(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            command = "git clone https://github.com/unresolvable/hooked"
+            record = {"cwd": directory, "session_id": "s", "hook_event_name": "PostToolUse", "tool_use_id": "c1",
+                      "tool_name": "Bash", "tool_input": {"command": command},
+                      "tool_response": json.dumps({"output": "", "metadata": {"exit_code": 128}})}
+            self.assertEqual(run(["hook", "record", "--from", "codex", json.dumps(record)])[0], 0)
+            log = Path(directory) / ".agent-thanks" / "sessions" / f"{session_file_stem('id:s')}.jsonl"
+            evil = self.codex_file(directory, "evil.jsonl", "s", "c1", "unresolvable/hooked", 0, cwd=self.BAD)
+            result = self.scan(directory, log, evil)
+            # No identity, so the log's failure does not reach the transcript and the
+            # transcript's success does not reach the log entry: each stands alone.
+            self.assertEqual(result["unresolvable/hooked"], (True, {"high", "low"}))
+
+    def test_a_resolvable_alias_still_links(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            real = Path(directory) / "real"
+            real.mkdir()
+            alias = Path(directory) / "alias"
+            alias.symlink_to(real, target_is_directory=True)
+            # The transcript records the alias; the scan root is the target, as on macOS
+            # where /var and /private/var name the same directory.
+            ok = self.codex_file(str(real), "ok.jsonl", "s", "c1", "alias/linked", 0, cwd=str(alias))
+            failed = self.codex_file(str(real), "failed.jsonl", "s", "c1", "alias/linked", 128, cwd=str(real))
+            self.assertEqual(self.scan(str(real), ok, failed)["alias/linked"], (False, {"low"}))
 
 
 class WholeRecordAndDuplicateKeyTests(IsolatedEnvironmentTestCase):

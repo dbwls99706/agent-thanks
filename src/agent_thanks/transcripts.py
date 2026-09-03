@@ -361,7 +361,10 @@ def transcript_identity(path: Path) -> tuple[str, str] | None:
     metadata = transcript_metadata(path)
     if metadata.session_id is None or metadata.cwd is None:
         return None
-    return metadata.session_id, _normalize_path(metadata.cwd)
+    directory = _normalize_path(metadata.cwd)
+    if directory is None:
+        return None  # an unresolvable directory identifies nothing
+    return metadata.session_id, directory
 
 
 def hook_log_identity(path: Path) -> str | None:
@@ -696,18 +699,43 @@ def transcript_metadata(path: Path) -> TranscriptMetadata:
 
 
 def same_path(recorded: str, expected: Path | str) -> bool:
-    """Compare two directory paths after normalization; no substring matching."""
-    return _normalize_path(recorded) == _normalize_path(str(expected))
+    """Compare two directory paths after normalization; no substring matching.
+
+    A path with no comparable spelling matches nothing, not even another copy of
+    itself.
+    """
+    left = _normalize_path(recorded)
+    right = _normalize_path(str(expected))
+    return left is not None and right is not None and left == right
 
 
-def _normalize_path(value: str) -> str:
+def _normalize_path(value: str) -> str | None:
+    """Return a comparable spelling of a directory path, or None when it has none.
+
+    Hook roots are resolved before state is written, so transcript metadata must
+    use the same physical-path spelling.  This matters on macOS, where temporary
+    directories commonly arrive as /var/... while resolve() uses the
+    /private/var/... target, and on Windows for junctions and 8.3 names.
+
+    A value no operating system accepts as a path has no such spelling, and None
+    says so. Callers must then decline to match or merge rather than fall back to
+    the raw text: two files recording the same malformed directory would
+    otherwise be read as one session, and a success in either could speak for the
+    other.
+
+    Null characters are rejected here rather than left to ``realpath``, because
+    the platforms disagree about them: POSIX raises ValueError, while Windows
+    (CPython gh-106242) returns the path unchanged in non-strict mode, which
+    would hand back a spelling that compares equal to itself.
+    """
     text = value.strip()
+    if "\0" in text:
+        return None
     trimmed = text.rstrip("/\\") or text
-    # Hook roots are resolved before state is written, so transcript metadata
-    # must use the same physical-path spelling.  This matters on macOS, where
-    # temporary directories commonly arrive as /var/... while resolve() uses
-    # the /private/var/... target, and on Windows for junctions and 8.3 names.
-    resolved = os.path.realpath(os.path.abspath(os.path.expanduser(trimmed)))
+    try:
+        resolved = os.path.realpath(os.path.abspath(os.path.expanduser(trimmed)))
+    except (OSError, ValueError):
+        return None
     return os.path.normcase(os.path.normpath(resolved)).replace("\\", "/")
 
 
