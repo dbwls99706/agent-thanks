@@ -304,15 +304,24 @@ class ResultStatusTests(unittest.TestCase):
             {"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "x1",
                                                   "output": json.dumps({"output": "", "metadata": {"exit_code": 0}})}},
             {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec", "call_id": "x2",
-                                                  "input": json.dumps({"cmd": "git clone https://github.com/codex/custom-json"})}},
-            {"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "x2", "output": "Exit code: 1"}},
+                                                  "input": 'await exec_command({cmd: "git clone https://github.com/codex/code-mode"});'}},
+            {"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "x2",
+                                                  "output": json.dumps({"exit_code": 0, "output": "Cloning..."})}},
+            {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec", "call_id": "x3",
+                                                  "input": "git clone https://github.com/codex/code-mode-plain"}},
+            {"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "x3",
+                                                  "output": json.dumps({"exit_code": 0, "output": "Cloning..."})}},
         ]
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "rollout.jsonl"
             write_jsonl(path, records)
             evidence = evidence_by_repository(scan_transcript_evidence(path, "rollout.jsonl"))
         self.assertEqual(evidence["codex/custom"].confidence, "high")
-        self.assertEqual(evidence["codex/custom-json"].confidence, "low")
+        # A code-mode `exec` call records a program, not a shell command: references only.
+        self.assertEqual(evidence["codex/code-mode"].confidence, "low")
+        self.assertIn("referenced", evidence["codex/code-mode"].detail)
+        self.assertEqual(evidence["codex/code-mode-plain"].confidence, "low")
+        self.assertIn("referenced", evidence["codex/code-mode-plain"].detail)
 
     def test_unjudgeable_results_keep_commands_as_references(self) -> None:
         records = [

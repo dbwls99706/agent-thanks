@@ -127,6 +127,9 @@ hook payloads name the shell tool `Bash`:
 }
 ```
 
+Codex runs these only after you review and trust them with `/hooks` inside
+Codex.
+
 Without hooks, point `notify` in `$CODEX_HOME/config.toml` at the stop hook:
 
 ```toml

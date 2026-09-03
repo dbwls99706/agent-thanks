@@ -28,7 +28,9 @@ All notable changes to this project will be documented in this file.
   and hidden reasoning are never actions.
 - Recognize Codex `exec_command` results, whose exit code is recorded in a
   header ahead of the program output, and Codex hooks, whose payloads name the
-  shell tool `Bash`. Gemini CLI yields review-only references, because its
+  shell tool `Bash`. Code-mode `exec` programs yield references only; the
+  hook log covers the calls they make. Gemini CLI yields review-only
+  references, because its
   shell tool marks success only by the absence of failure signals.
 - Replace the bundled plain-text example with `examples/session.jsonl`, a
   transcript whose classification matches `agent-thanks demo`.

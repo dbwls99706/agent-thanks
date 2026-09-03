@@ -357,16 +357,23 @@ its payloads name the shell tool `Bash`:
 }
 ```
 
-The stop payload carries `session_id`, `cwd`, and `transcript_path`, so no
-lookup is needed. Because the Codex post-tool event also fires for commands
+Codex runs a hook only after you review and trust its exact definition: run
+`/hooks` inside Codex to inspect, trust, or disable hooks, and note that a
+project-local `.codex/hooks.json` loads only when the project's `.codex` layer
+is trusted. The stop payload carries `session_id`, `cwd`, and
+`transcript_path`, so no lookup is needed. Because the Codex post-tool event
+also fires for commands
 that exit with a non-zero status, a Codex entry is `ok` only when
 `tool_response` carries a successful exit status: the JSON envelope of the
 `shell` tool (`metadata.exit_code`) or the header the `exec_command` tool
 writes ahead of the program output (`Process exited with code 0`). Anything
 else is recorded as `error` or `unknown` and never promoted. The transcript
 adapter reads Codex `function_call` and `custom_tool_call` records for
-`shell`, `exec_command`, and `exec` the same way; a call whose recorded result
-is still running, missing, or unjudgeable stays a reference.
+`shell` and `exec_command` the same way; a call whose recorded result is still
+running, missing, or unjudgeable stays a reference. A code-mode `exec` call
+records a program rather than a shell command, so its text yields references
+only; Codex applies hooks to the tool calls that program makes, which is why
+the hook log, not the transcript, covers Work Mode sessions.
 
 Without hooks, point `notify` at the stop hook:
 

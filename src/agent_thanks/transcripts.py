@@ -48,7 +48,6 @@ SHELL_TOOLS = frozenset(
         "run_shell_command",
         "run_terminal_cmd",
         "run_command",
-        "exec",
         "terminal",
         "powershell",
         "cmd",
