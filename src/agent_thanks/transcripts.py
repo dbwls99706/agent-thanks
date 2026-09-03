@@ -703,7 +703,12 @@ def same_path(recorded: str, expected: Path | str) -> bool:
 def _normalize_path(value: str) -> str:
     text = value.strip()
     trimmed = text.rstrip("/\\") or text
-    return os.path.normcase(os.path.normpath(trimmed)).replace("\\", "/")
+    # Hook roots are resolved before state is written, so transcript metadata
+    # must use the same physical-path spelling.  This matters on macOS, where
+    # temporary directories commonly arrive as /var/... while resolve() uses
+    # the /private/var/... target, and on Windows for junctions and 8.3 names.
+    resolved = os.path.realpath(os.path.abspath(os.path.expanduser(trimmed)))
+    return os.path.normcase(os.path.normpath(resolved)).replace("\\", "/")
 
 
 def _first_string(mapping: dict[str, Any], keys: Iterable[str]) -> str | None:

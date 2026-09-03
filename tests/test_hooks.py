@@ -721,6 +721,31 @@ class SessionIdentityTests(IsolatedEnvironmentTestCase):
             self.assertEqual(result["identity/here"], (True, {"high"}))
             self.assertEqual(result["identity/there"], (False, {"low"}))
 
+    @unittest.skipIf(os.name == "nt", "POSIX symbolic links")
+    def test_hook_and_transcript_share_an_identity_across_a_path_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            root = parent / "real-project"
+            root.mkdir()
+            alias = parent / "project-alias"
+            alias.symlink_to(root, target_is_directory=True)
+            command = "git clone https://github.com/identity/aliased"
+            record = {
+                "cwd": str(alias),
+                "session_id": "s",
+                "hook_event_name": "PostToolUse",
+                "tool_use_id": "t1",
+                "tool_name": "Bash",
+                "tool_input": {"command": command},
+            }
+            self.assertEqual(run(["hook", "record", "--from", "claude-code", json.dumps(record)])[0], 0)
+            transcript = root / "failed.jsonl"
+            write_transcript(transcript, command, is_error=True, cwd=str(alias), session_id="s")
+            log = root / ".agent-thanks" / "sessions" / f"{session_file_stem('id:s')}.jsonl"
+
+            result = self.scan(str(root), log, transcript)
+            self.assertEqual(result["identity/aliased"], (False, {"low"}))
+
     def test_files_without_an_identity_never_touch_each_other(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             ok = self.codex_file(directory, "ok.jsonl", None, "c1", "anonymous/ok", 0)
@@ -822,8 +847,9 @@ class WholeRecordAndDuplicateKeyTests(IsolatedEnvironmentTestCase):
                      '"status": "error", "status": "ok", "basis": "successful_post_tool_event"}')
             (sessions / f"{session_file_stem('id:d')}.jsonl").write_text(entry + "\n", encoding="utf-8")
             self.assertEqual(run(["hook", "stop", "--offline", json.dumps({"cwd": directory, "session_id": "d"})]), (0, ""))
-            payload = ('{"cwd": "%s", "session_id": "p", "hook_event_name": "PostToolUse", "tool_use_id": "t1", "tool_name": "Bash", '
-                       '"tool_input": {"command": "git clone https://github.com/dup/payload"}, "hook_event_name": "PreToolUse"}' % directory)
+            payload = ('{"cwd": ' + json.dumps(directory)
+                       + ', "session_id": "p", "hook_event_name": "PostToolUse", "tool_use_id": "t1", "tool_name": "Bash", '
+                       '"tool_input": {"command": "git clone https://github.com/dup/payload"}, "hook_event_name": "PreToolUse"}')
             stderr = io.StringIO()
             with contextlib.redirect_stderr(stderr):
                 self.assertEqual(run(["hook", "record", "--from", "claude-code", payload]), (0, ""))
@@ -832,6 +858,34 @@ class WholeRecordAndDuplicateKeyTests(IsolatedEnvironmentTestCase):
 
 
 class FailClosedStateTests(IsolatedEnvironmentTestCase):
+    def test_private_file_io_does_not_open_a_directory_without_dir_fd(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            real_open = os.open
+            opened_directories: list[Path] = []
+
+            def tracking_open(path: object, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+                candidate = Path(path) if not isinstance(path, int) else None
+                if candidate is not None and candidate.is_dir():
+                    opened_directories.append(candidate)
+                if dir_fd is None:
+                    return real_open(path, flags, mode)
+                return real_open(path, flags, mode, dir_fd=dir_fd)
+
+            record = {
+                "cwd": directory,
+                "session_id": "fallback",
+                "hook_event_name": "PostToolUse",
+                "tool_use_id": "t1",
+                "tool_name": "Bash",
+                "tool_input": {"command": "git clone https://github.com/fallback/repo"},
+            }
+            with mock.patch.object(os, "supports_dir_fd", set()), mock.patch.object(os, "open", side_effect=tracking_open):
+                self.assertEqual(run(["hook", "record", "--from", "claude-code", json.dumps(record)]), (0, ""))
+
+            log = Path(directory) / ".agent-thanks" / "sessions" / f"{session_file_stem('id:fallback')}.jsonl"
+            self.assertTrue(log.is_file())
+            self.assertEqual(opened_directories, [])
+
     @unittest.skipIf(os.name == "nt", "POSIX special files")
     def test_a_fifo_at_the_log_path_is_refused_promptly(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
