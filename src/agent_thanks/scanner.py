@@ -107,7 +107,9 @@ class ProjectScanner:
 
         # Hook logs are the authority for the tool calls they record: their statuses
         # override the transcripts' own results for the same call ids, and a call
-        # the two kinds of source disagree about is demoted on both sides.
+        # the two kinds of source disagree about is demoted on both sides. Every
+        # transcript of the scan also sees what the others recorded for each call
+        # id, so a failure in one file demotes the same call in another.
         sources = [(session_file, Path(session_file)) for session_file in session_files]
         hook_logs = [(name, path) for name, path in sources if str(name) != "-" and is_hook_log(path)]
         transcripts = [
@@ -125,7 +127,9 @@ class ProjectScanner:
             if (name, path) in hook_logs:
                 evidence_items.extend(scan_hook_log_evidence(path, str(name), transcript_calls=calls))
             elif (name, path) in transcripts:
-                evidence_items.extend(scan_transcript_evidence(path, str(name), authoritative=overrides))
+                evidence_items.extend(
+                    scan_transcript_evidence(path, str(name), authoritative=overrides, session_calls=calls)
+                )
             else:
                 text = self._read_session(name)
                 evidence_items.extend(self._scan_session(text, str(name), trusted=self.trust_sessions))

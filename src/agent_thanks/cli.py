@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import shutil
 import subprocess
 import sys
@@ -553,30 +554,52 @@ def _state_directory(root: Path) -> Path:
     state = _private_directory(root / STATE_DIRECTORY)
     ignore = state / ".gitignore"
     if not ignore.exists():
-        ignore.write_text("*\n", encoding="utf-8")
+        _private_write(ignore, "*\n")
     return state
 
 
 def _private_directory(path: Path) -> Path:
-    """Create a state directory readable by its owner only, tightening an existing one."""
+    """Create a state directory readable by its owner only, refusing symlinks.
+
+    The directory itself must be a real directory: a symlink in its place
+    would let another party redirect logs, reports, and pruning elsewhere.
+    Existing directories are tightened to 0700 on POSIX.
+    """
+    if path.is_symlink():
+        raise RuntimeError(f"Refusing to use {path}: it is a symbolic link")
     path.mkdir(exist_ok=True)
-    try:
+    if not stat.S_ISDIR(os.lstat(path).st_mode):
+        raise RuntimeError(f"Refusing to use {path}: not a directory")
+    if os.name != "nt":
         os.chmod(path, 0o700)
-    except OSError:
-        pass
     return path
 
 
 def _private_write(path: Path, text: str, *, append: bool = False) -> None:
-    """Write a state file readable by its owner only; the log holds raw commands."""
+    """Write a state file readable by its owner only, refusing symlinks and special files."""
+    if path.is_symlink():
+        raise RuntimeError(f"Refusing to write {path}: it is a symbolic link")
     flags = os.O_WRONLY | os.O_CREAT | (os.O_APPEND if append else os.O_TRUNC)
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
     descriptor = os.open(path, flags, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        handle.write(text)
     try:
-        os.chmod(path, 0o600)
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise RuntimeError(f"Refusing to write {path}: not a regular file")
+        if os.name != "nt":
+            os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            descriptor = -1
+            handle.write(text)
+    finally:
+        if descriptor != -1:
+            os.close(descriptor)
+
+
+def _is_private_regular_file(path: Path) -> bool:
+    try:
+        return stat.S_ISREG(os.lstat(path).st_mode)
     except OSError:
-        pass
+        return False
 
 
 def _session_id(payload: dict[str, object]) -> str | None:
@@ -711,7 +734,7 @@ def _hook_stop(
     sources: list[Path] = []
     if scope is not None:
         log = _session_log(state, scope)
-        if log.is_file():
+        if _is_private_regular_file(log):
             sources.append(log)
     transcript = payload.get("transcript_path")
     if isinstance(transcript, str) and Path(transcript).is_file():
@@ -766,16 +789,24 @@ def _load_announced(path: Path) -> dict[str, list[str]]:
 
 
 def _prune_state(state: Path) -> None:
+    """Delete stale logs and reports, and only regular files inside the real state directories."""
     cutoff = time.time() - SESSION_LOG_MAX_AGE_SECONDS
-    for directory, pattern in ((state / "sessions", "*.jsonl"), (state / "reports", "*.json")):
-        if not directory.is_dir():
-            continue
-        for path in directory.glob(pattern):
-            try:
-                if path.stat().st_mtime < cutoff:
-                    path.unlink()
-            except OSError:
+    for name, suffix in (("sessions", ".jsonl"), ("reports", ".json")):
+        directory = state / name
+        try:
+            if directory.is_symlink() or not stat.S_ISDIR(os.lstat(directory).st_mode):
                 continue
+        except OSError:
+            continue
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                try:
+                    if not entry.name.endswith(suffix) or not entry.is_file(follow_symlinks=False):
+                        continue
+                    if entry.stat(follow_symlinks=False).st_mtime < cutoff:
+                        os.unlink(entry.path)
+                except OSError:
+                    continue
 
 
 def _announcement(repositories: list[str], report_path: Path, root: Path) -> str:

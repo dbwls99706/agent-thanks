@@ -92,9 +92,10 @@ A command from a plain-text log stays low because the log records no result;
 add `--trust-session` only when you can vouch that the commands succeeded. A
 command from a transcript stays low when its recorded result failed, cannot be
 judged, or is missing, and when the statement combines commands with `;`,
-`||`, `|`, or `&`, wraps the command in `env` with an assignment, or chains it
-after `set`, `export`, `printf`, or a variable assignment, because a
-successful exit then does not belong to the repository command. When a hook
+`||`, `|`, or `&`, wraps the command in `env` with an assignment, chains it
+after `set`, `export`, `printf`, or a variable assignment, or names the
+executable with a path such as `/tmp/fake/git` or `./git`, because a
+successful exit then does not belong to the real repository command. When a hook
 log exists for the session, it is the authority: a transcript command whose
 success the log did not confirm, whose command text differs from the log's
 entry, or whose call id the transcript reuses stays low as well, and a hook
@@ -160,10 +161,12 @@ code. Run that command if the batch should be reverted.
 
 `.agent-thanks/sessions` stores the exact text of every shell command the agent
 ran, for 30 days, so that later turns can be judged; a command such as
-`TOKEN=... curl ...` lands there verbatim. The directory and its files are
-created readable by their owner only and tightened on every run. Delete the
-directory whenever you want to drop the history, or remove the hook to stop
-recording.
+`TOKEN=... curl ...` lands there verbatim. On POSIX systems the directory and
+its files are created readable by their owner only and tightened on every run;
+Windows keeps the profile's own access control. A symbolic link anywhere in the
+state directory makes the hooks refuse to write or prune, with a note on
+standard error. Delete the directory whenever you want to drop the history, or
+remove the hook to stop recording.
 
 ## The report contains a local path
 

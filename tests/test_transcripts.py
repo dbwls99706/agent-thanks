@@ -443,10 +443,11 @@ class ResultStatusTests(unittest.TestCase):
             evidence = evidence_by_repository(scan_transcript_evidence(path, "t.jsonl"))
         self.assertEqual(evidence["prose/assistant"].confidence, "high")
         self.assertEqual(evidence["prose/codex"].confidence, "high")
-        for name in ("conflict", "developer", "roleless", "nested"):
+        for name in ("conflict", "roleless", "nested"):
             self.assertEqual(evidence[f"prose/{name}"].confidence, "low", name)
             self.assertIn("referenced", evidence[f"prose/{name}"].detail, name)
-        self.assertNotIn("prose/system", evidence)
+        for name in ("system", "developer"):
+            self.assertNotIn(f"prose/{name}", evidence, name)
 
     def test_success_fields_count_only_at_their_agents_fixed_position(self) -> None:
         self.assertEqual(result_status({"data": {"exit_code": 0}}, agent="codex"), RESULT_UNKNOWN)
@@ -480,6 +481,87 @@ class ResultStatusTests(unittest.TestCase):
         self.assertEqual(evidence["tools/bash"].confidence, "high")
         for tool in ("shell", "exec_command", "run_shell_command"):
             self.assertEqual(evidence[f"tools/{tool}"].confidence, "low", tool)
+
+    def test_item_level_roles_and_positions_are_checked(self) -> None:
+        clone = "git clone https://github.com/items/{name}"
+        ok = lambda call_id, **extra: {"type": "tool_result", "tool_use_id": call_id, "is_error": False, "content": "ok", **extra}  # noqa: E731
+        records = [
+            # a provenance item that carries role user inside an assistant message
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "text", "role": "user", "text": "Adapted from https://github.com/items/user-item"}]}},
+            # a tool_result item that carries role assistant inside a user message
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "a1", "name": "Bash", "input": {"command": clone.format(name="assistant-item")}}]}},
+            {"type": "user", "message": {"role": "user", "content": [ok("a1", role="assistant")]}},
+            # a developer-role tool_use with a well-placed success
+            {"type": "developer", "message": {"role": "developer", "content": [
+                {"type": "tool_use", "id": "d1", "name": "Bash", "input": {"command": clone.format(name="developer")}}]}},
+            {"type": "user", "message": {"role": "user", "content": [ok("d1")]}},
+            # a role-less top-level tool_use with a well-placed success
+            {"type": "tool_use", "id": "r1", "name": "Bash", "input": {"command": clone.format(name="roleless")}},
+            {"type": "user", "message": {"role": "user", "content": [ok("r1")]}},
+            # a tool_use inside a message whose record type is not assistant
+            {"type": "system", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "s1", "name": "Bash", "input": {"command": clone.format(name="system-record")}}]}},
+            {"type": "user", "message": {"role": "user", "content": [ok("s1")]}},
+            # the genuine shape
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "g1", "name": "Bash", "input": {"command": clone.format(name="genuine")}}]}},
+            {"type": "user", "message": {"role": "user", "content": [ok("g1")]}},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "t.jsonl"
+            write_jsonl(path, records)
+            evidence = evidence_by_repository(scan_transcript_evidence(path, "t.jsonl"))
+        self.assertEqual(evidence["items/genuine"].confidence, "high")
+        self.assertEqual(evidence["items/user-item"].confidence, "low")
+        self.assertIn("referenced", evidence["items/user-item"].detail)
+        for name in ("assistant-item", "roleless"):
+            self.assertEqual(evidence[f"items/{name}"].confidence, "low", name)
+        # Developer content is user-side content, and a call under a conflicting record type and
+        # message role is nothing at all: never an action, never even a reference.
+        for name in ("developer", "system-record"):
+            self.assertNotIn(f"items/{name}", evidence, name)
+
+    def test_incomplete_or_hidden_failures_never_let_a_success_through(self) -> None:
+        deep = {"exit_code": 0}
+        cursor = deep
+        for _ in range(9):
+            cursor["nested"] = {}
+            cursor = cursor["nested"]
+        cursor["exit_code"] = 128
+        self.assertNotEqual(result_status(deep, agent="codex"), RESULT_OK)
+        shallow = {"exit_code": 0, "a": {"b": {"c": {"exit_code": 128}}}}
+        self.assertEqual(result_status(shallow, agent="codex"), RESULT_ERROR)
+        self.assertEqual(result_status("Exit code: 0\nOutput:\n{\"error\": \"fatal\"}", agent="codex"), RESULT_ERROR)
+        self.assertEqual(result_status("Exit code: 0\nOutput:\nline\n{\"exit_code\": 2}", agent="codex"), RESULT_ERROR)
+        self.assertEqual(result_status({"exit_code": 0, "is_error": None}, agent="codex"), RESULT_ERROR)
+        self.assertEqual(result_status({"is_error": None}, agent="claude-code"), RESULT_ERROR)
+        self.assertEqual(result_status({"is_error": False, "isError": None}, agent="claude-code"), RESULT_ERROR)
+        self.assertEqual(result_status({"exit_code": 0, "output": "Exit code: 0\n{\"error\": \"x\"}"}, agent="codex"), RESULT_ERROR)
+
+    def test_transcripts_of_one_session_are_merged_failure_first(self) -> None:
+        command = "git clone https://github.com/session/split"
+        call = {"type": "function_call", "name": "shell", "call_id": "c1", "arguments": json.dumps({"command": command})}
+        with tempfile.TemporaryDirectory() as directory:
+            part_a = Path(directory) / "part-a.jsonl"
+            part_b = Path(directory) / "part-b.jsonl"
+            write_jsonl(part_a, [call, {"type": "function_call_output", "call_id": "c1", "output": json.dumps({"output": "", "metadata": {"exit_code": 0}})}])
+            write_jsonl(part_b, [call, {"type": "function_call_output", "call_id": "c1", "output": json.dumps({"output": "fatal", "metadata": {"exit_code": 128}})}])
+            from agent_thanks.transcripts import merge_transcript_calls, transcript_calls
+
+            merged = merge_transcript_calls([transcript_calls(part_a), transcript_calls(part_b)])
+            alone = evidence_by_repository(scan_transcript_evidence(part_a, "part-a.jsonl"))
+            together = evidence_by_repository(scan_transcript_evidence(part_a, "part-a.jsonl", session_calls=merged))
+            other_command = Path(directory) / "part-c.jsonl"
+            write_jsonl(other_command, [{"type": "function_call", "name": "shell", "call_id": "c1", "arguments": json.dumps({"command": "git clone https://github.com/session/other"})}])
+            merged_conflict = merge_transcript_calls([transcript_calls(part_a), transcript_calls(other_command)])
+            conflicted = evidence_by_repository(scan_transcript_evidence(part_a, "part-a.jsonl", session_calls=merged_conflict))
+        self.assertEqual(alone["session/split"].confidence, "high")
+        self.assertEqual(together["session/split"].confidence, "low")
+        self.assertIn("failed", together["session/split"].detail)
+        self.assertEqual(conflicted["session/split"].confidence, "low")
+        self.assertIn("reused one tool call identifier", conflicted["session/split"].detail)
 
     def test_a_success_recorded_before_its_call_proves_nothing(self) -> None:
         call = {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "git clone https://github.com/order/{name}"}}
@@ -626,9 +708,12 @@ class ResultStatusTests(unittest.TestCase):
             path = Path(directory) / "rollout.jsonl"
             write_jsonl(path, records)
             evidence = evidence_by_repository(scan_transcript_evidence(path, "rollout.jsonl"))
-        for repository in ("alias/run-shell", "alias/bash", "alias/tool-use"):
+        for repository in ("alias/run-shell", "alias/bash"):
             self.assertEqual(evidence[repository].confidence, "low", repository)
             self.assertIn("cannot be judged", evidence[repository].detail, repository)
+        # A bare tool_use is not where Claude Code writes calls, so it is not even anchored.
+        self.assertEqual(evidence["alias/tool-use"].confidence, "low")
+        self.assertIn("outside a recognized tool call position", evidence["alias/tool-use"].detail)
         self.assertEqual(evidence["alias/genuine"].confidence, "high")
 
     def test_codex_custom_tool_calls_are_recognized(self) -> None:
@@ -725,6 +810,11 @@ class SuccessAttributionTests(unittest.TestCase):
             ("env -i git clone https://github.com/acme/repo", False, False, "referenced"),
             ("PATH=/tmp/fake git clone https://github.com/acme/repo", False, False, "referenced"),
             ("env git clone https://github.com/acme/repo", False, True, "completed successfully"),
+            ("/tmp/fake/git clone https://github.com/acme/repo", False, False, "referenced"),
+            ("./git clone https://github.com/acme/repo", False, False, "referenced"),
+            ("sudo /tmp/fake/git clone https://github.com/acme/repo", False, False, "referenced"),
+            ("/tmp/fake/pip install git+https://github.com/acme/repo", False, False, "referenced"),
+            ("/bin/mkdir -p x && git clone https://github.com/acme/repo", False, False, "compound"),
             # Provenance phrases count only in prose, never as the text of a tool command.
             ("Adapted from https://github.com/acme/repo", True, False, "referenced"),
             ("Adapted from https://github.com/acme/repo", False, False, "referenced"),

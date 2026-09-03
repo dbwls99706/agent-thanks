@@ -362,7 +362,15 @@ def _strip_command_wrappers(tokens: list[str]) -> list[str]:
 
 
 def _executable_name(token: str) -> str:
-    return token.replace("\\", "/").rsplit("/", 1)[-1].casefold()
+    """Return the executable's name, or nothing when a path is given.
+
+    ``/tmp/fake/git`` or ``./git`` names a specific binary rather than the tool
+    found on ``PATH``; nothing about its exit status proves that the official
+    tool ran, so a path-qualified executable is never recognized.
+    """
+    if "/" in token or "\\" in token:
+        return ""
+    return token.casefold()
 
 
 def _positional_arguments(

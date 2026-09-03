@@ -594,10 +594,80 @@ class HookContractTests(IsolatedEnvironmentTestCase):
                 for folder in (state, state / "sessions", state / "reports"):
                     self.assertEqual(mode(folder), 0o700, folder)
                 for file in [*(state / "sessions").iterdir(), *(state / "reports").iterdir(),
-                             state / "report.json", state / "announced.json"]:
+                             state / "report.json", state / "announced.json", state / ".gitignore"]:
                     self.assertEqual(mode(file), 0o600, file)
         finally:
             os.umask(previous)
+
+    @unittest.skipIf(os.name == "nt", "POSIX symbolic links")
+    def test_state_paths_never_follow_symbolic_links(self) -> None:
+        import time
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "project"
+            outside = Path(directory) / "outside"
+            root.mkdir()
+            outside.mkdir()
+            important = outside / "important.jsonl"
+            important.write_text("keep me\n", encoding="utf-8")
+            old = time.time() - 40 * 24 * 3600
+            os.utime(important, (old, old))
+            state = root / ".agent-thanks"
+            state.mkdir()
+            (state / "sessions").symlink_to(outside, target_is_directory=True)
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                status, output = run(["hook", "stop", "--from", "claude-code", "--offline", json.dumps({"cwd": str(root), "session_id": "s"})])
+                record = {"cwd": str(root), "session_id": "s", "hook_event_name": "PostToolUse", "tool_use_id": "t1",
+                          "tool_name": "Bash", "tool_input": {"command": "git clone https://github.com/symlink/repo"}}
+                self.assertEqual(run(["hook", "record", "--from", "claude-code", json.dumps(record)])[0], 0)
+            self.assertEqual(status, 0)
+            self.assertTrue(important.exists(), "pruning followed the symbolic link")
+            self.assertEqual(important.read_text(encoding="utf-8"), "keep me\n")
+            self.assertEqual(list(outside.iterdir()), [important])
+            self.assertIn("symbolic link", stderr.getvalue())
+
+            # A symlinked file in a real directory is never truncated either.
+            (state / "sessions").unlink()
+            (state / "sessions").mkdir()
+            target = outside / "target.json"
+            target.write_text("precious", encoding="utf-8")
+            (state / "report.json").symlink_to(target)
+            transcript = root / "t.jsonl"
+            write_transcript(transcript, "git clone https://github.com/symlink/report")
+            with contextlib.redirect_stderr(io.StringIO()):
+                status, _ = run(["hook", "stop", "--from", "claude-code", "--offline",
+                                 json.dumps({"cwd": str(root), "session_id": "s2", "transcript_path": str(transcript)})])
+            self.assertEqual(status, 0)
+            self.assertEqual(target.read_text(encoding="utf-8"), "precious")
+
+    def test_transcripts_of_one_session_scanned_together_merge_failure_first(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            command = "git clone https://github.com/session/parts"
+            call = {"type": "response_item", "payload": {"type": "function_call", "name": "shell", "call_id": "c1",
+                                                         "arguments": json.dumps({"command": command})}}
+            part_a = Path(directory) / "part-a.jsonl"
+            part_b = Path(directory) / "part-b.jsonl"
+            part_a.write_text("".join(json.dumps(r) + "\n" for r in [
+                call, {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "c1",
+                                                            "output": json.dumps({"output": "", "metadata": {"exit_code": 0}})}}]), encoding="utf-8")
+            part_b.write_text("".join(json.dumps(r) + "\n" for r in [
+                call, {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "c1",
+                                                            "output": json.dumps({"output": "fatal", "metadata": {"exit_code": 128}})}}]), encoding="utf-8")
+            status, output = run(["scan", "--repo", directory, "--offline", "--session", str(part_a), "--session", str(part_b), "--output", "-"])
+            self.assertEqual(status, 0)
+            candidate = next(c for c in json.loads(output)["candidates"] if c["repository"] == "session/parts")
+            self.assertFalse(candidate["recommended"])
+            self.assertTrue(all(e["confidence"] == "low" for e in candidate["evidence"]))
+            # A hook log that agrees with part A does not rescue it either.
+            record = {"cwd": directory, "session_id": "s", "hook_event_name": "PostToolUse", "tool_use_id": "c1",
+                      "tool_name": "Bash", "tool_input": {"command": command},
+                      "tool_response": json.dumps({"output": "", "metadata": {"exit_code": 0}})}
+            self.assertEqual(run(["hook", "record", "--from", "codex", json.dumps(record)])[0], 0)
+            log = Path(directory) / ".agent-thanks" / "sessions" / f"{session_file_stem('id:s')}.jsonl"
+            status, output = run(["scan", "--repo", directory, "--offline", "--session", str(log), "--session", str(part_a), "--session", str(part_b), "--output", "-"])
+            candidate = next(c for c in json.loads(output)["candidates"] if c["repository"] == "session/parts")
+            self.assertFalse(candidate["recommended"])
 
 
 class CodexNotifyTests(IsolatedEnvironmentTestCase):

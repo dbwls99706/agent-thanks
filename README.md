@@ -150,7 +150,9 @@ Session commands that can count as use:
 A command counts only when a recorded success belongs to it. The statement must
 be a single command, or a chain joined only by `&&` whose other segments are
 trivially safe (`cd`, `mkdir`, `echo`, and similar; not `set`, `export`,
-`printf`, or a variable assignment). `env PATH=... git clone URL`,
+`printf`, or a variable assignment), and every executable must be named
+without a path, because `/tmp/fake/git` or `./git` proves nothing about the
+real tool. `env PATH=... git clone URL`,
 `git clone URL || true`,
 `git clone URL; echo ok`, `git clone URL | tee log`, `git clone URL &`,
 `eval 'exit 0' && git clone URL`, `git clone URL && make`, and a tool call that
@@ -251,13 +253,17 @@ ways, and neither interrupts the agent or changes a Star:
 1. **Transcripts.** Pass the agent's session transcript with `--session`; JSON
    and JSON Lines files are detected automatically. A command counts only when
    a known shell tool (`Bash`, `shell`, `exec_command`, `run_shell_command`,
-   and similar) that the agent itself called executed it, the transcript
+   and similar) that the agent itself called, at the position its agent
+   writes calls (a content item of a Claude Code assistant message, a Codex
+   response item, a part of a Gemini model turn), executed it, the transcript
    records an exact success for that call in the position and field its agent
    writes (`is_error` equal to `false` in a Claude Code `tool_result` inside a
    user message, or an exit code of 0 in the JSON or header envelope Codex
    writes for its own `shell` or `exec_command` tool; Gemini records no
    success signal) after the call and with no failure signal anywhere in the
-   envelope, the record's outer type and inner role agree, the call id is used
+   envelope, the envelope is small enough to scan completely, every item's own
+   role agrees with the message and record around it, every transcript scanned
+   together agrees about the call, the call id is used
    for that call alone, the transcript has no unparsable line, the call names
    the agent's own shell tool (`Bash` for Claude Code, `shell` or
    `exec_command` for Codex), the
@@ -309,11 +315,14 @@ ways, and neither interrupts the agent or changes a Star:
    through its own `.gitignore`. Hooks exit successfully even when something
    goes wrong, so they can never block the agent, and with `--from codex` or
    `--from gemini` they print `{}` whenever they have nothing to say, because
-   those agents parse a hook's standard output as JSON. The state directory
-   and its files are created readable by their owner only (`0700` and `0600`)
-   and tightened on every run, because the log keeps the raw text of every
-   shell command for 30 days, secrets included; delete `.agent-thanks/sessions`
-   at any time to drop it. Every supported hook
+   those agents parse a hook's standard output as JSON. On POSIX systems the
+   state directory and every file in it are created readable by their owner
+   only (`0700` and `0600`) and tightened on every run, because the log keeps
+   the raw text of every shell command for 30 days, secrets included; delete
+   `.agent-thanks/sessions` at any time to drop it. Windows keeps the profile's
+   own access control instead. A symbolic link anywhere in the state directory
+   is refused, so the hooks can neither write through nor prune through one.
+   Every supported hook
    contract carries a session or thread identifier, which scopes the log, the
    report, and the announcements; a payload without one is scoped by its
    transcript path, and without either nothing is recorded and nothing is

@@ -11,7 +11,8 @@ All notable changes to this project will be documented in this file.
   segments are trivially safe (`cd`, `mkdir`, `echo`, and similar; `set`,
   `export`, `printf`, variable assignments, and `env` wrappers with
   assignments or options are not, because `set -n` skips execution and an
-  assignment can redirect `PATH` to a fake `git`). Failed,
+  assignment can redirect `PATH` to a fake `git`), and every executable must
+  be named without a path. Failed,
   conflicting, unjudgeable, and missing results, transcripts without results,
   multi-line invocations, and compound statements such as
   `git clone URL || true` or `eval 'exit 0' && git clone URL` stay references,
@@ -24,13 +25,15 @@ All notable changes to this project will be documented in this file.
   results. Success is read only from the structured field each agent writes,
   in the position it writes it (a Claude Code `tool_result` inside a user
   message, a Codex output item paired with a Codex call record of its own
-  `shell` or `exec_command` tool; Gemini has none), only for the agent's own
-  shell tool (`Bash` for Claude Code), only after the call it names, only when
-  the record's outer type and inner role agree, and only when no contradictory
-  or malformed field anywhere in the envelope blocks it, never from program
-  output or bare text; a transcript with an unparsable line promotes nothing;
-  provenance prose counts only at an assistant-role message position;
-  several
+  `shell` or `exec_command` tool; Gemini has none), only for calls and results
+  at the positions the agent writes them, only for the agent's own shell tool
+  (`Bash` for Claude Code), only after the call it names, only when every
+  item's own role agrees with its record, only when the envelope can be
+  scanned completely and no contradictory or malformed field anywhere in it
+  blocks the success, and only when every transcript scanned together agrees
+  about the call, never from program output or bare text; a transcript with an
+  unparsable line promotes nothing; provenance prose counts only at an
+  assistant message position; several
   results for one call combine failure first; a call id reused for different
   calls, or a call found outside a recognized tool call position, attributes
   no result; call-shaped objects inside user or tool content are never
@@ -53,8 +56,9 @@ All notable changes to this project will be documented in this file.
   never by file name alone, honoring `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, and
   to fail rather than guess.
 - Create the `.agent-thanks` state directory and its files readable by their
-  owner only, tightening existing ones, because hook logs keep raw shell
-  commands.
+  owner only on POSIX, tightening existing ones, because hook logs keep raw
+  shell commands; refuse symbolic links anywhere in the state directory and
+  prune only regular files inside it.
 - Add `agent-thanks hook record` and `agent-thanks hook stop`, detection-only
   entry points for agent hooks. `record` keeps a structured per-session log
   with each command's recorded status and basis, treating the Claude Code
