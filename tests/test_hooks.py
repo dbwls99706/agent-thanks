@@ -124,6 +124,45 @@ class HookRecordTests(IsolatedEnvironmentTestCase):
             self.assertFalse(candidate["recommended"])
             self.assertTrue(all(e["confidence"] == "low" for e in candidate["evidence"]))
 
+    def test_conflicting_hook_entries_for_one_call_never_announce(self) -> None:
+        header = "Chunk ID: c0de\nWall time: 0.1 seconds\nProcess exited with code {code}\nOutput:\n"
+        with tempfile.TemporaryDirectory() as directory:
+            for code in (128, 0):
+                record = {"cwd": directory, "session_id": "s", "tool_use_id": "same", "tool_name": "Bash",
+                          "tool_input": {"command": "git clone https://github.com/conflict/hook"},
+                          "tool_response": header.format(code=code) + ("fatal" if code else "Cloning...")}
+                self.assertEqual(run(["hook", "record", "--from", "codex", json.dumps(record)]), (0, ""))
+            payload = json.dumps({"cwd": directory, "session_id": "s"})
+            self.assertEqual(run(["hook", "stop", "--from", "codex", "--offline", payload]), (0, ""))
+            report = json.loads((Path(directory) / ".agent-thanks" / "reports" / "s.json").read_text(encoding="utf-8"))
+            candidate = report["candidates"][0]
+            self.assertEqual(candidate["repository"], "conflict/hook")
+            self.assertFalse(candidate["recommended"])
+            self.assertEqual({e["confidence"] for e in candidate["evidence"]}, {"low"})
+
+    def test_hook_success_applies_only_to_the_same_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            transcript = Path(directory) / "t.jsonl"
+            records = [
+                {"type": "response_item", "payload": {"type": "function_call", "name": "shell", "call_id": "same",
+                 "arguments": json.dumps({"command": "git clone https://github.com/mismatch/command"})}},
+                {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "same",
+                 "output": json.dumps({"output": "", "metadata": {"exit_code": 0}})}},
+            ]
+            transcript.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+            record = {"cwd": directory, "session_id": "s", "tool_use_id": "same", "tool_name": "Bash",
+                      "tool_input": {"command": "echo ok"},
+                      "tool_response": json.dumps({"output": "ok", "metadata": {"exit_code": 0}})}
+            self.assertEqual(run(["hook", "record", "--from", "codex", json.dumps(record)]), (0, ""))
+            payload = json.dumps({"cwd": directory, "session_id": "s", "transcript_path": str(transcript)})
+            self.assertEqual(run(["hook", "stop", "--from", "codex", "--offline", payload]), (0, ""))
+            report = json.loads((Path(directory) / ".agent-thanks" / "reports" / "s.json").read_text(encoding="utf-8"))
+            candidate = report["candidates"][0]
+            self.assertEqual(candidate["repository"], "mismatch/command")
+            self.assertFalse(candidate["recommended"])
+            self.assertTrue(all(e["confidence"] == "low" for e in candidate["evidence"]))
+            self.assertTrue(any("different command" in e["detail"] for e in candidate["evidence"]))
+
     def test_outcome_follows_the_agent_contract(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             def record(agent: list[str], response: object, command: str) -> None:
@@ -192,6 +231,24 @@ class HookStopTests(IsolatedEnvironmentTestCase):
             write_transcript(transcript, "ls -la")
             payload = json.dumps({"cwd": directory, "transcript_path": str(transcript)})
             self.assertEqual(run(["hook", "stop", "--offline", payload]), (0, ""))
+
+
+class GeminiHookOutputTests(IsolatedEnvironmentTestCase):
+    def test_gemini_hooks_answer_with_an_empty_object_when_silent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            payload = json.dumps({"cwd": directory, "session_id": "g"})
+            status, out = run(["hook", "stop", "--from", "gemini", "--offline", payload])
+            self.assertEqual((status, json.loads(out)), (0, {}))
+            record = json.dumps({"cwd": directory, "session_id": "g", "tool_name": "read_file", "tool_input": {"path": "x"}})
+            status, out = run(["hook", "record", "--from", "gemini", record])
+            self.assertEqual((status, json.loads(out)), (0, {}))
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                status, out = run(["hook", "stop", "--from", "gemini", "{not json"])
+            self.assertEqual((status, json.loads(out)), (0, {}))
+            self.assertIn("agent-thanks hook", stderr.getvalue())
+            # Other agents accept an empty standard output and keep it.
+            self.assertEqual(run(["hook", "stop", "--from", "claude-code", "--offline", payload]), (0, ""))
 
 
 class CodexNotifyTests(IsolatedEnvironmentTestCase):

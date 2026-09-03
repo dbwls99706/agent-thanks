@@ -20,9 +20,11 @@ All notable changes to this project will be documented in this file.
 - Read coding-agent transcripts (JSON and JSON Lines) with `--session`,
   pairing recognized shell-tool calls in the supported structured formats
   (Claude Code, Codex CLI, and Gemini CLI records) with their recorded
-  results. Success is read only from the result envelope, never from program
-  output; several results for one call combine failure first; call-shaped
-  objects inside user or tool content are never actions. Only known shell
+  results. Success is read only from structured envelope fields, never from
+  program output or bare text; string envelopes are interpreted only for
+  Codex's own shell tools; several results for one call combine failure
+  first; call-shaped objects inside user or tool content are never actions.
+  Only known shell
   tools count; other tools contribute references. In agent prose only
   line-initial provenance statements count as use. Tool output, user prompts,
   and hidden reasoning are never actions.
@@ -43,10 +45,13 @@ All notable changes to this project will be documented in this file.
   with each command's recorded status and basis, treating the Claude Code
   success-only post-tool event as a success basis only when started with
   `--from claude-code`; `stop` treats that log as the authority for actions,
-  overriding the transcript's own results for the same tool call and leaving
-  transcript commands the log never saw unconfirmed, promotes successful
-  entries only, writes per-session reports, and announces newly verified
-  repositories once per session, without ever changing a Star.
+  combining several entries for one call failure first, overriding the
+  transcript's own result only when call id and command both match, leaving
+  mismatches and transcript commands the log never saw unconfirmed, promotes
+  successful entries only, writes per-session reports, and announces newly
+  verified repositories once per session, without ever changing a Star. With
+  `--from gemini` the hooks answer `{}` when silent, as Gemini's hook contract
+  requires.
 - Bundle a Claude Code plugin marketplace with hooks and a `/thanks` command.
 - Document pip and release-wheel installation for environments without `pipx`.
 

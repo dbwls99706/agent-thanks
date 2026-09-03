@@ -5,6 +5,7 @@ import unittest
 
 from agent_thanks.models import Evidence
 from agent_thanks.transcripts import (
+    HookStatus,
     RESULT_ERROR,
     RESULT_OK,
     RESULT_UNKNOWN,
@@ -174,13 +175,17 @@ class ResultStatusTests(unittest.TestCase):
             json.dumps({"error": "fatal"}): RESULT_ERROR,
             json.dumps({"status": "failed"}): RESULT_ERROR,
             json.dumps({"status": "success"}): RESULT_UNKNOWN,
-            json.dumps({"output": "done", "metadata": {"exit_code": 0}}): RESULT_OK,
-            "Exit code: 0\nOutput:\nCloning...": RESULT_OK,
+            json.dumps({"output": "done", "metadata": {"exit_code": 0}}): RESULT_UNKNOWN,
+            "Exit code: 0\nOutput:\nCloning...": RESULT_UNKNOWN,
             "Exit code: 128\nOutput:\nfatal": RESULT_ERROR,
         }
         for value, expected in cases.items():
             with self.subTest(value=value):
                 self.assertEqual(result_status(value), expected)
+        # The same strings prove success only as the envelope Codex writes for its shell tools.
+        self.assertEqual(result_status(json.dumps({"output": "done", "metadata": {"exit_code": 0}}), codex_envelope=True), RESULT_OK)
+        self.assertEqual(result_status("Exit code: 0\nOutput:\nCloning...", codex_envelope=True), RESULT_OK)
+        self.assertEqual(result_status("Exit code: 128\nOutput:\nfatal", codex_envelope=True), RESULT_ERROR)
         self.assertEqual(result_status({"stdout": "", "stderr": ""}), RESULT_UNKNOWN)
         self.assertEqual(result_status({"is_error": False}), RESULT_OK)
         self.assertEqual(result_status({"is_error": True}), RESULT_ERROR)
@@ -203,23 +208,62 @@ class ResultStatusTests(unittest.TestCase):
         self.assertEqual(result_status({"stdout": json.dumps({"is_error": False})}), RESULT_UNKNOWN)
         self.assertEqual(result_status(json.dumps({"output": "Exit code: 0", "metadata": {}})), RESULT_UNKNOWN)
         self.assertEqual(result_status("Cloning...\nExit code: 0"), RESULT_UNKNOWN)
-        self.assertEqual(result_status("Exit code: 0\nCloning..."), RESULT_OK)
-        self.assertEqual(result_status(json.dumps({"output": "done", "metadata": {"exit_code": 0}})), RESULT_OK)
-        self.assertEqual(result_status({"status": "success"}), RESULT_OK)
+        self.assertEqual(result_status("Cloning...\nExit code: 0", codex_envelope=True), RESULT_UNKNOWN)
+        self.assertEqual(result_status("Exit code: 0\nCloning..."), RESULT_UNKNOWN)
+        self.assertEqual(result_status("Exit code: 0\nCloning...", codex_envelope=True), RESULT_UNKNOWN)
+        self.assertEqual(result_status("Exit code: 0\nfatal: repository not found"), RESULT_UNKNOWN)
+        self.assertEqual(result_status("Exit code: 0\nfatal: repository not found", codex_envelope=True), RESULT_UNKNOWN)
+        self.assertEqual(result_status(json.dumps({"output": "done", "metadata": {"exit_code": 0}})), RESULT_UNKNOWN)
+        self.assertEqual(result_status(json.dumps({"output": "done", "metadata": {"exit_code": 0}}), codex_envelope=True), RESULT_OK)
+        self.assertEqual(result_status(json.dumps({"output": "done", "metadata": {"exit_code": 128}})), RESULT_ERROR)
+        self.assertEqual(result_status({"status": "success"}), RESULT_UNKNOWN)
+        self.assertEqual(result_status({"status": "failed"}), RESULT_ERROR)
         self.assertEqual(result_status(json.dumps({"error": "fatal"})), RESULT_ERROR)
 
-    def test_exit_codes_count_only_inside_the_result_header(self) -> None:
+    def test_exit_codes_count_only_inside_a_codex_result_header(self) -> None:
         header = "Chunk ID: ab12\nWall time: 0.0512 seconds\n{status}\nOriginal token count: 12\nOutput:\n"
-        self.assertEqual(result_status(header.format(status="Process exited with code 0") + "Cloning..."), RESULT_OK)
+        codex = {"codex_envelope": True}
+        ok_header = header.format(status="Process exited with code 0")
+        self.assertEqual(result_status(ok_header + "Cloning...", **codex), RESULT_OK)
+        self.assertEqual(result_status(ok_header + "Cloning..."), RESULT_UNKNOWN)
+        self.assertEqual(result_status(header.format(status="Process exited with code 128") + "fatal", **codex), RESULT_ERROR)
         self.assertEqual(result_status(header.format(status="Process exited with code 128") + "fatal"), RESULT_ERROR)
-        self.assertEqual(result_status(header.format(status="Process exited with code -1073741502")), RESULT_ERROR)
-        self.assertEqual(result_status(header.format(status="Process running with session ID 7") + "Cloning..."), RESULT_UNKNOWN)
-        self.assertEqual(result_status(header.format(status="Process exited with code 0") + "Exit code: 1"), RESULT_ERROR)
-        self.assertEqual(result_status("Exit code: 0\nWall time: 0.1 seconds\nOutput:\nExit code: 0"), RESULT_OK)
-        self.assertEqual(result_status("Output:\nProcess exited with code 0"), RESULT_UNKNOWN)
-        self.assertEqual(result_status("Cloning...\nProcess exited with code 0\nOutput:\n"), RESULT_UNKNOWN)
-        self.assertEqual(result_status("\n".join(["x: y"] * 9 + ["Process exited with code 0", "Output:"])), RESULT_UNKNOWN)
-        self.assertEqual(result_status("Cloning...\nOutput:\nProcess exited with code 0"), RESULT_UNKNOWN)
+        self.assertEqual(result_status(header.format(status="Process exited with code -1073741502"), **codex), RESULT_ERROR)
+        self.assertEqual(result_status(header.format(status="Process running with session ID 7") + "Cloning...", **codex), RESULT_UNKNOWN)
+        self.assertEqual(result_status(ok_header + "Exit code: 1", **codex), RESULT_ERROR)
+        self.assertEqual(result_status("Exit code: 0\nWall time: 0.1 seconds\nOutput:\nExit code: 0", **codex), RESULT_OK)
+        self.assertEqual(result_status("Output:\nProcess exited with code 0", **codex), RESULT_UNKNOWN)
+        self.assertEqual(result_status("Cloning...\nProcess exited with code 0\nOutput:\n", **codex), RESULT_UNKNOWN)
+        self.assertEqual(result_status("\n".join(["x: y"] * 9 + ["Process exited with code 0", "Output:"]), **codex), RESULT_UNKNOWN)
+        self.assertEqual(result_status("Cloning...\nOutput:\nProcess exited with code 0", **codex), RESULT_UNKNOWN)
+        self.assertEqual(result_status("Process exited with code 0", **codex), RESULT_UNKNOWN)
+
+    def test_string_results_prove_success_only_for_codex_shell_tools(self) -> None:
+        envelope = json.dumps({"output": "Cloning...", "metadata": {"exit_code": 0}})
+        header = "Chunk ID: ab12\nWall time: 0.1 seconds\nProcess exited with code 0\nOutput:\nCloning..."
+        records = [
+            {"type": "function_call", "name": "shell", "call_id": "s1", "arguments": json.dumps({"command": "git clone https://github.com/codex/shell"})},
+            {"type": "function_call_output", "call_id": "s1", "output": envelope},
+            {"type": "function_call", "name": "shell", "call_id": "s2", "arguments": json.dumps({"command": "git clone https://github.com/codex/bare-text"})},
+            {"type": "function_call_output", "call_id": "s2", "output": "Exit code: 0\nfatal: repository not found"},
+            {"type": "function_call", "name": "shell", "call_id": "s3", "arguments": json.dumps({"command": "git clone https://github.com/codex/fake-json"})},
+            {"type": "function_call_output", "call_id": "s3", "output": json.dumps({"status": "success"})},
+            {"type": "custom_tool_call", "name": "exec_command", "call_id": "s4", "input": "git clone https://github.com/codex/unified"},
+            {"type": "custom_tool_call_output", "call_id": "s4", "output": header},
+            {"type": "function_call", "name": "shell", "call_id": "s5", "arguments": json.dumps({"command": "git clone https://github.com/codex/missing-call"})},
+            {"type": "function_call_output", "call_id": "orphan", "output": envelope},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rollout.jsonl"
+            write_jsonl(path, records)
+            evidence = evidence_by_repository(scan_transcript_evidence(path, "rollout.jsonl"))
+        self.assertEqual(evidence["codex/shell"].confidence, "high")
+        self.assertEqual(evidence["codex/unified"].confidence, "high")
+        self.assertEqual(evidence["codex/bare-text"].confidence, "low")
+        self.assertIn("cannot be judged", evidence["codex/bare-text"].detail)
+        self.assertEqual(evidence["codex/fake-json"].confidence, "low")
+        self.assertEqual(evidence["codex/missing-call"].confidence, "low")
+        self.assertIn("recorded no result", evidence["codex/missing-call"].detail)
 
     def test_codex_exec_command_header_results_are_judged(self) -> None:
         header = "Chunk ID: c0de\nWall time: 1.2 seconds\nProcess exited with code {code}\nOutput:\n"
@@ -289,13 +333,25 @@ class ResultStatusTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "r.jsonl"
             write_jsonl(path, records)
+            records.extend([
+                {"type": "function_call", "name": "shell", "call_id": "c4", "arguments": json.dumps({"command": "git clone https://github.com/hook/mismatch"})},
+                {"type": "function_call_output", "call_id": "c4", "output": json.dumps({"output": "", "metadata": {"exit_code": 0}})},
+            ])
+            write_jsonl(path, records)
+            authoritative = {
+                "c1": HookStatus("error", "git clone https://github.com/hook/failed"),
+                "c2": HookStatus("ok", "git  clone https://github.com/hook/agreed"),
+                "c4": HookStatus("ok", "echo ok"),
+            }
             evidence = evidence_by_repository(
-                scan_transcript_evidence(path, "r.jsonl", authoritative={"c1": "error", "c2": "ok"})
+                scan_transcript_evidence(path, "r.jsonl", authoritative=authoritative)
             )
         self.assertEqual(evidence["hook/failed"].confidence, "low")
         self.assertEqual(evidence["hook/agreed"].confidence, "high")
         self.assertEqual(evidence["hook/unseen"].confidence, "low")
         self.assertIn("hook log did not confirm", evidence["hook/unseen"].detail)
+        self.assertEqual(evidence["hook/mismatch"].confidence, "low")
+        self.assertIn("different command", evidence["hook/mismatch"].detail)
 
     def test_codex_custom_tool_calls_are_recognized(self) -> None:
         records = [

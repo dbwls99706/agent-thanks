@@ -22,10 +22,11 @@ from pathlib import Path
 import re
 import shlex
 from dataclasses import dataclass
-from typing import Any, Iterable, Iterator, Mapping
+from typing import Any, Iterable, Iterator, Mapping, NamedTuple
 
 from .models import Evidence
 from .session import (
+    OUTCOME_CONFLICT,
     OUTCOME_ERROR,
     OUTCOME_MISSING,
     OUTCOME_OK,
@@ -166,7 +167,7 @@ def load_transcript_records(path: Path) -> list[tuple[int, Any]]:
 
 
 def iter_transcript_records(
-    path: Path, *, authoritative: Mapping[str, str] | None = None
+    path: Path, *, authoritative: Mapping[str, "HookStatus"] | None = None
 ) -> Iterator[TranscriptRecord]:
     """Yield (record number, kind, text, outcome).
 
@@ -177,10 +178,12 @@ def iter_transcript_records(
 
     When ``authoritative`` is given (statuses per tool call id from a hook log),
     it replaces the transcript's own results: a command is 'ok' only if the hook
-    log says so, and a command the hook log never saw is 'unconfirmed'.
+    log says so for the same call id and the same command, a command the hook
+    log never saw is 'unconfirmed', and a call whose recorded command differs
+    from the hook log's is a 'conflict'.
     """
     records = load_transcript_records(path)
-    results = _index_results(records)
+    results = _index_results(records, _index_calls(records))
     for number, record in records:
         for kind, text, outcome in _walk(record, None, 0, results, authoritative):
             if text.strip():
@@ -188,7 +191,7 @@ def iter_transcript_records(
 
 
 def scan_transcript_evidence(
-    path: Path, source: str, *, authoritative: Mapping[str, str] | None = None
+    path: Path, source: str, *, authoritative: Mapping[str, "HookStatus"] | None = None
 ) -> list[tuple[str, Evidence]]:
     """Classify every record of a transcript; labels point at the record number."""
     items: list[tuple[str, Evidence]] = []
@@ -232,23 +235,21 @@ def is_hook_log(path: Path) -> bool:
     return False
 
 
-def load_hook_log_statuses(path: Path) -> dict[str, str]:
-    """Return the combined status per tool call id recorded in a hook log."""
-    statuses: dict[str, list[str]] = {}
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(entry, dict):
-            continue
-        call_id = entry.get("tool_call_id")
-        if isinstance(call_id, str) and call_id:
-            statuses.setdefault(call_id, []).append(str(entry.get("status")))
-    return {call_id: combine_statuses(values) for call_id, values in statuses.items()}
+class HookStatus(NamedTuple):
+    """Combined status of one tool call in a hook log, with the command it recorded."""
+
+    status: str
+    command: str | None
+
+
+def normalize_command(command: str) -> str:
+    """Collapse whitespace so the same command matches across records."""
+    return " ".join(command.split())
+
+
+def load_hook_log_statuses(path: Path) -> dict[str, HookStatus]:
+    """Return the combined status and command per tool call id recorded in a hook log."""
+    return _combine_hook_log(_hook_log_entries(path))
 
 
 def combine_statuses(statuses: Iterable[str]) -> str:
@@ -263,9 +264,55 @@ def combine_statuses(statuses: Iterable[str]) -> str:
     return RESULT_UNKNOWN
 
 
+def combine_hook_entries(entries: Iterable[Mapping[str, Any]]) -> HookStatus:
+    """Combine every hook log entry recorded for one tool call.
+
+    Statuses combine failure first. Entries that disagree about the command
+    they ran contradict each other, so their combined status is never ok and
+    no single command is kept for them.
+    """
+    items = list(entries)
+    status = combine_statuses(str(entry.get("status")) for entry in items)
+    commands: set[str] = set()
+    for entry in items:
+        command = entry.get("command")
+        if isinstance(command, str) and command.strip():
+            commands.add(normalize_command(command))
+    if len(commands) > 1:
+        return HookStatus(RESULT_ERROR if status == RESULT_ERROR else RESULT_UNKNOWN, None)
+    return HookStatus(status, next(iter(commands), None))
+
+
 def scan_hook_log_evidence(path: Path, source: str) -> list[tuple[str, Evidence]]:
-    """Classify hook log entries; only entries recorded as successful can count as use."""
+    """Classify hook log entries; only calls whose every entry recorded success can count as use.
+
+    Entries that share a tool call id are judged by their combined status, so a
+    call recorded as failed once stays a reference even if a later entry for the
+    same call recorded success.
+    """
+    entries = _hook_log_entries(path)
+    combined = _combine_hook_log(entries)
     items: list[tuple[str, Evidence]] = []
+    for number, entry in entries:
+        command = entry.get("command")
+        if not isinstance(command, str) or not command.strip():
+            continue
+        call_id = entry.get("tool_call_id")
+        if isinstance(call_id, str) and call_id:
+            status = combined[call_id].status
+        else:
+            status = str(entry.get("status"))
+        outcome = HOOK_LOG_STATUSES.get(status, OUTCOME_UNKNOWN)
+        items.extend(
+            scan_session_evidence(
+                command, f"{source}:{number}", line_labels=False, outcome=outcome, single_statement=True
+            )
+        )
+    return items
+
+
+def _hook_log_entries(path: Path) -> list[tuple[int, dict[str, Any]]]:
+    entries: list[tuple[int, dict[str, Any]]] = []
     for number, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), start=1):
         line = line.strip()
         if not line:
@@ -274,16 +321,18 @@ def scan_hook_log_evidence(path: Path, source: str) -> list[tuple[str, Evidence]
             entry = json.loads(line)
         except json.JSONDecodeError:
             continue
-        command = entry.get("command") if isinstance(entry, dict) else None
-        if not isinstance(command, str) or not command.strip():
-            continue
-        outcome = HOOK_LOG_STATUSES.get(str(entry.get("status")), OUTCOME_UNKNOWN)
-        items.extend(
-            scan_session_evidence(
-                command, f"{source}:{number}", line_labels=False, outcome=outcome, single_statement=True
-            )
-        )
-    return items
+        if isinstance(entry, dict):
+            entries.append((number, entry))
+    return entries
+
+
+def _combine_hook_log(entries: Iterable[tuple[int, dict[str, Any]]]) -> dict[str, HookStatus]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for _, entry in entries:
+        call_id = entry.get("tool_call_id")
+        if isinstance(call_id, str) and call_id:
+            grouped.setdefault(call_id, []).append(entry)
+    return {call_id: combine_hook_entries(items) for call_id, items in grouped.items()}
 
 
 def encode_project_path(path: Path | str) -> str:
@@ -426,18 +475,30 @@ def _head_records(path: Path, *, limit: int) -> list[Any]:
     return records
 
 
-def _index_results(records: Iterable[tuple[int, Any]]) -> dict[str, str]:
+def _index_calls(records: Iterable[tuple[int, Any]]) -> dict[str, str]:
+    """Map tool call identifiers to tool names, read from envelope positions only."""
+    tools: dict[str, str] = {}
+    for _, record in records:
+        for node in _result_envelopes(record):
+            call = _call_of(node)
+            if call is not None and call[2] is not None:
+                tools.setdefault(call[2], call[0])
+    return tools
+
+
+def _index_results(records: Iterable[tuple[int, Any]], tools: Mapping[str, str]) -> dict[str, str]:
     """Map tool call identifiers to a combined status from recorded result envelopes.
 
     Only envelope positions are read: a record, its ``payload``, and the items
     of its message ``content`` or ``parts`` lists. Result-shaped objects nested
     inside program output are never indexed. Several results for one call are
-    combined with failure first.
+    combined with failure first. ``tools`` names the tool behind each call so a
+    string result is interpreted only for the tools whose envelope is known.
     """
     statuses: dict[str, list[str]] = {}
     for _, record in records:
         for node in _result_envelopes(record):
-            entry = _result_of(node)
+            entry = _result_of(node, tools)
             if entry is not None:
                 statuses.setdefault(entry[0], []).append(entry[1])
     return {call_id: combine_statuses(values) for call_id, values in statuses.items()}
@@ -475,19 +536,23 @@ def _iter_dicts(node: Any, depth: int) -> Iterator[dict[str, Any]]:
             yield from _iter_dicts(item, depth + 1)
 
 
-def result_status(value: Any) -> str:
+def result_status(value: Any, *, codex_envelope: bool = False) -> str:
     """Judge a recorded tool result envelope with failure-first semantics.
 
-    Success signals are accepted only from structured envelope fields: an
-    ``is_error`` flag equal to ``False``, an integer exit code (top level or
-    under ``metadata``), an envelope ``status``, or an "Exit code: 0" header on
-    the first line of a text envelope. Program output (``output``, ``stdout``,
-    ``content``, ``message``, ``text``) can never create a success signal, so a
-    program that prints a success message cannot fake one. Failure signals are
-    accepted from anywhere. Any failure makes the result RESULT_ERROR; without
-    a failure, an exact success makes it RESULT_OK; otherwise RESULT_UNKNOWN.
+    Success signals are accepted only from structured envelope fields: in a
+    result object, an ``is_error`` flag equal to ``False`` or an integer exit
+    code of 0 (top level or under ``metadata``). A string result yields a
+    success signal only when ``codex_envelope`` is set, which callers do only
+    for the envelope Codex writes for its own shell tools: a JSON-encoded
+    envelope's exit code, or the exit code in the header block that precedes
+    the ``Output:`` marker. Program output (``output``, ``stdout``,
+    ``content``, ``message``, ``text``) and any other bare text can never create
+    a success signal, so a program that prints a success message cannot fake
+    one. Failure signals are accepted from anywhere. Any failure makes the
+    result RESULT_ERROR; without a failure, an exact success makes it
+    RESULT_OK; otherwise RESULT_UNKNOWN.
     """
-    failures, successes = _envelope_signals(value, 0)
+    failures, successes = _envelope_signals(value, 0, codex_envelope)
     if failures:
         return RESULT_ERROR
     if successes:
@@ -495,7 +560,7 @@ def result_status(value: Any) -> str:
     return RESULT_UNKNOWN
 
 
-def _envelope_signals(value: Any, depth: int) -> tuple[int, int]:
+def _envelope_signals(value: Any, depth: int, codex_envelope: bool) -> tuple[int, int]:
     failures = successes = 0
     if depth > 4:
         return failures, successes
@@ -515,12 +580,8 @@ def _envelope_signals(value: Any, depth: int) -> tuple[int, int]:
         if value.get("error"):
             failures += 1
         status = value.get("status")
-        if isinstance(status, str):
-            lowered = status.casefold()
-            if lowered in _FAILURE_STATUSES:
-                failures += 1
-            elif lowered in _SUCCESS_STATUSES:
-                successes += 1
+        if isinstance(status, str) and status.casefold() in _FAILURE_STATUSES:
+            failures += 1
         for key in _RESULT_TEXT_KEYS:
             failures += _output_failures(value.get(key), depth + 1)
         return failures, successes
@@ -532,13 +593,13 @@ def _envelope_signals(value: Any, depth: int) -> tuple[int, int]:
             except json.JSONDecodeError:
                 parsed = None
             if isinstance(parsed, dict):
-                # A JSON-encoded envelope: trust only its exit code for success.
+                # A JSON-encoded envelope: only Codex's own shell tools may prove success with it.
                 code = _exit_code(parsed)
                 if code is not None:
-                    if code == 0:
-                        successes += 1
-                    else:
+                    if code != 0:
                         failures += 1
+                    elif codex_envelope:
+                        successes += 1
                 if parsed.get("error"):
                     failures += 1
                 status = parsed.get("status")
@@ -547,7 +608,7 @@ def _envelope_signals(value: Any, depth: int) -> tuple[int, int]:
                 for key in _RESULT_TEXT_KEYS:
                     failures += _output_failures(parsed.get(key), depth + 1)
                 return failures, successes
-        header, body = _split_text_envelope(stripped)
+        header, body = _split_text_envelope(stripped) if codex_envelope else ("", stripped)
         for match in _EXIT_CODE_PATTERN.finditer(header):
             if int(match.group(1)) == 0:
                 successes += 1
@@ -565,9 +626,9 @@ def _split_text_envelope(text: str) -> tuple[str, str]:
     time`` / ``Process exited with code N`` lines) and then an ``Output:`` line
     before the program output. The header is the lines before the first
     ``Output:`` line when that line is among the first few and every line before
-    it is a header field; otherwise only the first line is the header. Success
-    is read from the header alone, because a program can print anything after
-    the marker but nothing before it.
+    it is a header field; a text without such a header is all program output.
+    Success is read from the header alone, because a program can print anything
+    after the marker but nothing before it.
     """
     lines = text.splitlines()
     for index, line in enumerate(lines[:_MAX_HEADER_LINES]):
@@ -575,7 +636,7 @@ def _split_text_envelope(text: str) -> tuple[str, str]:
             if all(_HEADER_LINE_PATTERN.match(item.strip()) for item in lines[:index]):
                 return "\n".join(lines[:index]), "\n".join(lines[index + 1 :])
             break
-    return "\n".join(lines[:1]), "\n".join(lines[1:])
+    return "", text
 
 
 def _exit_code(mapping: dict[str, Any]) -> int | None:
@@ -611,7 +672,7 @@ def _output_failures(output: Any, depth: int) -> int:
     return 0
 
 
-def _result_of(node: dict[str, Any]) -> tuple[str, str] | None:
+def _result_of(node: dict[str, Any], tools: Mapping[str, str]) -> tuple[str, str] | None:
     """Pair a recorded result with its call identifier; every format uses the same judge."""
     node_type = node.get("type")
     if node_type == "tool_result" and isinstance(node.get("tool_use_id"), str):
@@ -619,7 +680,12 @@ def _result_of(node: dict[str, Any]) -> tuple[str, str] | None:
     if node_type in {"function_call_output", "custom_tool_call_output"} and isinstance(
         node.get("call_id"), str
     ):
-        return node["call_id"], result_status(node.get("output"))
+        # Codex writes the output envelope itself only for its shell tools; a string
+        # result of any other tool is program output and never proves success.
+        call_id = node["call_id"]
+        return call_id, result_status(
+            node.get("output"), codex_envelope=is_shell_tool(tools.get(call_id))
+        )
     response = node.get("functionResponse")
     if isinstance(response, dict) and isinstance(response.get("id"), str):
         return response["id"], result_status(response.get("response"))
@@ -631,7 +697,7 @@ def _walk(
     role: str | None,
     depth: int,
     results: dict[str, str],
-    authoritative: Mapping[str, str] | None,
+    authoritative: Mapping[str, HookStatus] | None,
 ) -> list[tuple[str, str, str | None]]:
     found: list[tuple[str, str, str | None]] = []
     if depth > _MAX_DEPTH:
@@ -652,7 +718,9 @@ def _walk(
         if is_shell_tool(name):
             command = _command_of(parameters)
             if command:
-                found.append(("command", command, _command_outcome(call_id, results, authoritative)))
+                found.append(
+                    ("command", command, _command_outcome(call_id, command, results, authoritative))
+                )
         else:
             parameter_text = _parameter_text(parameters)
             if parameter_text:
@@ -671,11 +739,18 @@ def _walk(
 
 
 def _command_outcome(
-    call_id: str | None, results: dict[str, str], authoritative: Mapping[str, str] | None
+    call_id: str | None,
+    command: str,
+    results: dict[str, str],
+    authoritative: Mapping[str, HookStatus] | None,
 ) -> str:
     if authoritative is not None:
-        status = authoritative.get(call_id) if call_id is not None else None
-        return HOOK_LOG_STATUSES.get(status or "", OUTCOME_UNCONFIRMED)
+        entry = authoritative.get(call_id) if call_id is not None else None
+        if entry is None:
+            return OUTCOME_UNCONFIRMED
+        if entry.command is not None and normalize_command(entry.command) != normalize_command(command):
+            return OUTCOME_CONFLICT
+        return HOOK_LOG_STATUSES.get(entry.status, OUTCOME_UNCONFIRMED)
     status = results.get(call_id) if call_id is not None else None
     return HOOK_LOG_STATUSES.get(status or "", OUTCOME_MISSING)
 

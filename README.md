@@ -250,12 +250,13 @@ ways, and neither interrupts the agent or changes a Star:
    a known shell tool (`Bash`, `shell`, `exec_command`, `run_shell_command`,
    and similar) that the agent itself called executed it, the transcript
    records an exact success for that call in the result envelope (`is_error`
-   equal to `false`, an exit code of 0, a success status, or an exit code in
-   the header that Codex writes ahead of the program output) with no failure
-   signal beside it, the call is a single logical line, and the statement is a
-   single command or an `&&` chain whose other segments are trivially safe
-   (`cd`, `mkdir`, `echo`, and similar). Program output can never supply a
-   success signal, several results for one call combine failure first, and
+   equal to `false` or an exit code of 0 in a result object, or, for Codex's
+   own shell tools only, the exit code in the JSON or header envelope Codex
+   writes ahead of the program output) with no failure signal beside it, the
+   call is a single logical line, and the statement is a single command or an
+   `&&` chain whose other segments are trivially safe (`cd`, `mkdir`, `echo`,
+   and similar). Program output and bare text can never supply a success
+   signal, several results for one call combine failure first, and
    call-shaped objects inside user or tool content are never actions. A
    failed or conflicting result, a result with no signal, a missing result, a
    transcript that records no results at all, a multi-line invocation, or a
@@ -273,10 +274,12 @@ ways, and neither interrupts the agent or changes a Star:
    is `unknown` unless the hook runs with `--from claude-code`, whose post-tool
    event fires only after a successful run. The contract is never inferred
    from the payload. `agent-thanks hook stop` reads this log as the authority
-   for actions: its statuses override the transcript's own results for the
-   same tool call, and a transcript command the log never saw stays
-   unconfirmed. The transcript is merged for prose provenance and for the calls
-   the log confirms. The hook promotes only `ok` entries, writes
+   for actions: several entries for one tool call combine failure first, the
+   log's status overrides the transcript's own result for a call only when the
+   call id and the command both match, a mismatch is a conflict, and a
+   transcript command the log never saw stays unconfirmed. The transcript is
+   merged for prose provenance and for the calls the log confirms. The hook
+   promotes only `ok` entries, writes
    `.agent-thanks/reports/<session>.json` (and a copy at
    `.agent-thanks/report.json` as the latest result), and announces
    repositories the first time they show verified use in that session. Logs
@@ -400,6 +403,9 @@ Gemini CLI can run the stop hook from an `AfterAgent` hook in
   }
 }
 ```
+
+With `--from gemini` the hooks answer `{}` whenever they have nothing to say,
+because Gemini parses a hook's standard output as JSON.
 
 Gemini CLI currently yields review-only references. Its shell tool records a
 failure explicitly (an `Exit Code` line and `isError`) but marks success only

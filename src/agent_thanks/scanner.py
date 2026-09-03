@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
 import subprocess
-from typing import Iterable
+from typing import Iterable, Mapping
 
 from .manifests import Dependency, is_supported_manifest, parse_manifest
 from .models import Evidence, Report, UnresolvedDependency, merge_candidates
 from .resolver import PackageRepositoryResolver
 from .session import OUTCOME_ATTESTED, OUTCOME_MISSING, scan_session_evidence
 from .transcripts import (
+    HookStatus,
     is_hook_log,
     is_transcript,
     scan_hook_log_evidence,
@@ -50,7 +51,7 @@ class ProjectScanner:
         self,
         session_files: Iterable[Path] = (),
         *,
-        transcript_overrides: dict[str, str] | None = None,
+        transcript_overrides: Mapping[str, HookStatus] | None = None,
     ) -> Report:
         evidence_items: list[tuple[str, Evidence]] = []
         unresolved: list[UnresolvedDependency] = []

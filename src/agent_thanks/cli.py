@@ -21,6 +21,7 @@ from .transcripts import (
     RESULT_OK,
     RESULT_UNKNOWN,
     is_shell_tool,
+    HookStatus,
     load_hook_log_statuses,
     locate_transcript,
     result_status,
@@ -508,14 +509,22 @@ def _print_undo(repositories: list[str]) -> None:
 
 def _hook(args: argparse.Namespace) -> int:
     """Run a hook entry point. Hooks never fail the agent and never touch GitHub."""
+    output: dict[str, object] | None = None
     try:
         payload = _hook_payload(args.payload)
         if args.hook_command == "record":
-            return _hook_record(payload, agent=args.agent)
-        return _hook_stop(payload, agent=args.agent, offline=args.offline)
+            _hook_record(payload, agent=args.agent)
+        else:
+            output = _hook_stop(payload, agent=args.agent, offline=args.offline)
     except Exception as error:  # noqa: BLE001 - a hook must never interrupt the agent
         print(f"agent-thanks hook: {error}", file=sys.stderr)
-        return 0
+    if output is None and args.agent == "gemini":
+        # Gemini CLI parses the standard output of a successful hook as JSON, so a
+        # hook with nothing to say answers with an empty object.
+        output = {}
+    if output is not None:
+        print(json.dumps(output))
+    return 0
 
 
 def _hook_payload(raw: str | None) -> dict[str, object]:
@@ -586,12 +595,14 @@ def _infer_agent(payload: dict[str, object]) -> str | None:
 def _hook_outcome(payload: dict[str, object], agent: str | None) -> tuple[str, str]:
     """Return (status, basis) for a post-tool hook payload.
 
-    An explicit result in ``tool_response`` always wins. Without one, only the
-    Claude Code contract, whose post-tool event fires after a successful tool
-    run, justifies recording success, and only when ``--from claude-code`` was
-    passed explicitly; every other case records ``unknown``.
+    An explicit result in ``tool_response`` always wins. A text or JSON string
+    response is interpreted as a Codex envelope only with ``--from codex``.
+    Without an explicit result, only the Claude Code contract, whose post-tool
+    event fires after a successful tool run, justifies recording success, and
+    only when ``--from claude-code`` was passed explicitly; every other case
+    records ``unknown``.
     """
-    status = result_status(payload.get("tool_response"))
+    status = result_status(payload.get("tool_response"), codex_envelope=agent == "codex")
     if status == RESULT_OK:
         return RESULT_OK, "exit_status"
     if status == RESULT_ERROR:
@@ -601,14 +612,14 @@ def _hook_outcome(payload: dict[str, object], agent: str | None) -> tuple[str, s
     return RESULT_UNKNOWN, "no_result"
 
 
-def _hook_record(payload: dict[str, object], *, agent: str | None) -> int:
+def _hook_record(payload: dict[str, object], *, agent: str | None) -> None:
     tool_name = payload.get("tool_name") or payload.get("tool")
     tool_input = payload.get("tool_input") or payload.get("input")
     if not is_shell_tool(tool_name) or not isinstance(tool_input, dict):
-        return 0
+        return None
     command = tool_input.get("command")
     if not isinstance(command, str) or not command.strip():
-        return 0
+        return None
     status, basis = _hook_outcome(payload, agent)
     entry = {
         "agent": agent,
@@ -623,10 +634,12 @@ def _hook_record(payload: dict[str, object], *, agent: str | None) -> int:
     log = _session_log(state, _session_id(payload))
     with log.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    return 0
+    return None
 
 
-def _hook_stop(payload: dict[str, object], *, agent: str | None, offline: bool) -> int:
+def _hook_stop(
+    payload: dict[str, object], *, agent: str | None, offline: bool
+) -> dict[str, object] | None:
     root = _hook_root(payload)
     state = _state_directory(root)
     session_id = _session_id(payload)
@@ -637,7 +650,7 @@ def _hook_stop(payload: dict[str, object], *, agent: str | None, offline: bool) 
     # transcript's own results for the same tool call. The transcript adds prose
     # provenance; a transcript command the hook log never saw stays unconfirmed.
     sources: list[Path] = []
-    overrides: dict[str, str] | None = None
+    overrides: dict[str, HookStatus] | None = None
     log = _session_log(state, session_id)
     if log.is_file():
         sources.append(log)
@@ -652,7 +665,7 @@ def _hook_stop(payload: dict[str, object], *, agent: str | None, offline: bool) 
             if located is not None:
                 sources.append(located)
     if not sources:
-        return 0
+        return None
 
     resolver = PackageRepositoryResolver(offline=offline)
     report = ProjectScanner(root, base="HEAD", resolver=resolver).scan(
@@ -673,13 +686,12 @@ def _hook_stop(payload: dict[str, object], *, agent: str | None, offline: bool) 
         if candidate.recommended and candidate.repository.casefold() not in seen
     ]
     if not fresh:
-        return 0
+        return None
     announced[key] = sorted(seen | {item.casefold() for item in fresh})
     (state / "announced.json").write_text(
         json.dumps(announced, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    print(json.dumps({"systemMessage": _announcement(fresh, report_path, root)}))
-    return 0
+    return {"systemMessage": _announcement(fresh, report_path, root)}
 
 
 def _load_announced(path: Path) -> dict[str, list[str]]:

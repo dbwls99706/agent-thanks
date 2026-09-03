@@ -968,6 +968,7 @@ OUTCOME_ERROR = "error"
 OUTCOME_UNKNOWN = "unknown"
 OUTCOME_MISSING = "missing"
 OUTCOME_UNCONFIRMED = "unconfirmed"
+OUTCOME_CONFLICT = "conflict"
 _PROMOTING_OUTCOMES = {OUTCOME_OK, OUTCOME_ATTESTED}
 
 PROVENANCE_DETAIL = "Session states that code was adapted from this repository"
@@ -989,6 +990,10 @@ _DEMOTED_DETAILS = {
     OUTCOME_UNCONFIRMED: (
         "Session ran a repository command whose success the hook log did not confirm; "
         "verify actual reuse"
+    ),
+    OUTCOME_CONFLICT: (
+        "Session ran a repository command, but the hook log recorded a different command "
+        "for the same tool call; verify actual reuse"
     ),
 }
 COMPOUND_DETAIL = (

@@ -87,11 +87,16 @@ Claude Code post-tool event fires only after a successful run, so that contract
 records `ok` with basis `successful_post_tool_event`. The contract is never
 inferred from the payload, because hook payloads from different agents share
 the same field names and the Codex post-tool event also fires for failed
-commands. `stop` treats the hook log as the authority for actions: its
-statuses override the transcript's own results for the same tool call, a
-transcript command the log never saw stays unconfirmed, and only `ok` entries
-are promoted. The transcript is merged for prose provenance and for the calls
-the log confirms.
+commands. `stop` treats the hook log as the authority for actions. Entries
+that share a tool call id combine failure first, in the log's own evidence as
+well as in the override, so a call recorded as failed once never counts. The
+log's status replaces the transcript's own result for a call only when the
+call id and the normalized command both match; a call whose recorded command
+differs from the log's is a conflict, a transcript command the log never saw
+stays unconfirmed, and only `ok` entries are promoted. The transcript is
+merged for prose provenance and for the calls the log confirms. With
+`--from gemini` the hooks print `{}` when they have nothing to say, because
+Gemini parses a hook's standard output as JSON.
 
 Agent transcripts are read with a narrower rule than shell logs. Every
 recorded tool result is judged as `ok`, `error`, or `unknown` with failure
@@ -100,16 +105,21 @@ non-empty `error`, a failure status, or an "Exit code: N" line with N != 0,
 wherever it appears) makes the result `error` even when a success signal is
 also present; without a failure signal only an exact success signal makes it
 `ok`; everything else, including a result with no signal at all, is `unknown`.
-Success signals are read only from the result envelope: `is_error` equal to
-`false`, an integer exit code at the top level or under `metadata`, an
-envelope status, or an exit code in the header that Codex writes ahead of the
-`Output:` marker (`Exit code: 0` or `Process exited with code 0`). Program
-output (`content`, `output`, `stdout`, and similar) can never supply a success
-signal, so a program that prints a success message cannot fake one. Results
-are indexed only from envelope positions, never from result-shaped objects
-inside program output, and several results for one call combine failure
-first. The same judge applies to every format; the only format knowledge it
-carries is where an envelope ends and program output begins. A command counts
+Success signals are read only from structured envelope fields: in a result
+object, `is_error` equal to `false` or an integer exit code of 0 at the top
+level or under `metadata`. A string result is interpreted only when the
+paired call names one of Codex's own shell tools (`shell`, `exec_command`),
+because Codex writes that envelope itself: a JSON-encoded envelope's exit
+code, or the exit code in the header block that precedes the `Output:` marker
+(`Exit code: 0` or `Process exited with code 0`, with every header line a
+header field). Bare text from any other tool, program output (`content`,
+`output`, `stdout`, and similar), and a `status` field can never supply a
+success signal, so a program that prints a success message, a fake header, or
+a success JSON cannot fake one. Results are indexed only from envelope
+positions, never from result-shaped objects inside program output, and
+several results for one call combine failure first. The same judge applies to
+every format; the only format knowledge it carries is which tool wrote an
+envelope and where that envelope ends. A command counts
 like a shell-log line only when the agent itself called a tool on the exact
 allowlist of known shell tools (call-shaped objects inside user or tool
 content are never actions), the call's result is `ok`, the invocation is a
