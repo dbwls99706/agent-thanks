@@ -97,7 +97,10 @@ after `set`, `export`, `printf`, or a variable assignment, because a
 successful exit then does not belong to the repository command. When a hook
 log exists for the session, it is the authority: a transcript command whose
 success the log did not confirm, whose command text differs from the log's
-entry, or whose call id the transcript reuses stays low as well. Gemini CLI
+entry, or whose call id the transcript reuses stays low as well, and a hook
+entry stays low when the transcript recorded a failure for the same call or
+when the log contains a corrupted line. A provenance phrase typed as a tool
+command is a reference, not provenance. Gemini CLI
 commands stay low because Gemini records failures
 explicitly but marks success only by their absence, which is never accepted.
 The evidence detail names which case applied.

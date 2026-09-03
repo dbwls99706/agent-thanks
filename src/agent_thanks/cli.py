@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -22,6 +23,7 @@ from .transcripts import (
     RESULT_UNKNOWN,
     is_shell_tool,
     HOOK_LOG_SCHEMA,
+    HOOK_PROMOTION_MATRIX,
     locate_transcript,
     result_status,
     transcript_locations,
@@ -30,7 +32,7 @@ from .transcripts import (
 
 DEFAULT_REPORT = ".agent-thanks-report.json"
 STATE_DIRECTORY = ".agent-thanks"
-POST_TOOL_EVENTS = frozenset({"PostToolUse", "AfterTool"})
+POST_TOOL_EVENTS = frozenset({"PostToolUse", "PostToolUseFailure", "AfterTool"})
 SESSION_LOG_MAX_AGE_SECONDS = 30 * 24 * 3600
 AGENTS = ("claude-code", "codex", "gemini")
 
@@ -562,7 +564,11 @@ def _session_id(payload: dict[str, object]) -> str | None:
 
 
 def _safe_name(session_id: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]", "_", session_id)[:80] or "session"
+    """Return a file name for a session id; ids that needed sanitizing get a hash so they never collide."""
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", session_id)[:80] or "session"
+    if safe != session_id:
+        safe = f"{safe}-{hashlib.sha256(session_id.encode('utf-8')).hexdigest()[:12]}"
+    return safe
 
 
 def _session_log(state: Path, session_id: str | None) -> Path:
@@ -595,19 +601,25 @@ def _infer_agent(payload: dict[str, object]) -> str | None:
 def _hook_outcome(payload: dict[str, object], agent: str | None) -> tuple[str, str]:
     """Return (status, basis) for a post-tool hook payload.
 
-    An explicit result in ``tool_response`` always wins. A text or JSON string
-    response is interpreted as a Codex envelope only with ``--from codex``.
-    Without an explicit result, only the Claude Code contract, whose
-    ``PostToolUse`` event fires after a successful tool run, justifies recording
-    success, and only when ``--from claude-code`` was passed explicitly and the
-    payload names that exact event; every other case records ``unknown``.
+    A failure always wins: an explicit failure in ``tool_response`` or a Claude
+    Code ``PostToolUseFailure`` event records ``error``. A success is recorded
+    only through a promoting contract from ``HOOK_PROMOTION_MATRIX``: Codex with
+    a ``PostToolUse`` event for its canonical ``Bash`` tool and an explicit exit
+    status of 0 in the response, or Claude Code with a ``PostToolUse`` event for
+    ``Bash``, whose event fires only after a successful run. A text or JSON
+    string response is interpreted as a Codex envelope only with ``--from
+    codex``. Every other combination records ``unknown``.
     """
+    event = payload.get("hook_event_name")
+    tool = payload.get("tool_name") or payload.get("tool")
     status = result_status(payload.get("tool_response"), codex_envelope=agent == "codex")
-    if status == RESULT_OK:
-        return RESULT_OK, "exit_status"
     if status == RESULT_ERROR:
         return RESULT_ERROR, "tool_response"
-    if agent == "claude-code" and payload.get("hook_event_name") == "PostToolUse":
+    if event == "PostToolUseFailure":
+        return RESULT_ERROR, "post_tool_failure_event"
+    if status == RESULT_OK and (agent, event, tool, "exit_status") in HOOK_PROMOTION_MATRIX:
+        return RESULT_OK, "exit_status"
+    if (agent, event, tool, "successful_post_tool_event") in HOOK_PROMOTION_MATRIX:
         return RESULT_OK, "successful_post_tool_event"
     return RESULT_UNKNOWN, "no_result"
 
@@ -628,6 +640,7 @@ def _hook_record(payload: dict[str, object], *, agent: str | None) -> None:
         "schema": HOOK_LOG_SCHEMA,
         "agent": agent,
         "event": event,
+        "tool": tool_name,
         "session_id": _session_id(payload),
         "tool_call_id": payload.get("tool_use_id") or payload.get("tool_call_id"),
         "command": command,

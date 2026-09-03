@@ -972,6 +972,7 @@ OUTCOME_MISSING = "missing"
 OUTCOME_UNCONFIRMED = "unconfirmed"
 OUTCOME_CONFLICT = "conflict"
 OUTCOME_AMBIGUOUS = "ambiguous"
+OUTCOME_UNANCHORED = "unanchored"
 _PROMOTING_OUTCOMES = {OUTCOME_OK, OUTCOME_ATTESTED}
 
 PROVENANCE_DETAIL = "Session states that code was adapted from this repository"
@@ -1002,6 +1003,10 @@ _DEMOTED_DETAILS = {
         "Session reused one tool call identifier for different calls, so no result can be "
         "attributed to this command; verify actual reuse"
     ),
+    OUTCOME_UNANCHORED: (
+        "Session recorded this command outside a recognized tool call position, so no result "
+        "can be attributed to it; verify actual reuse"
+    ),
 }
 COMPOUND_DETAIL = (
     "Session ran a compound shell statement; the repository command's own result "
@@ -1022,6 +1027,7 @@ def scan_session_evidence(
     line_labels: bool = True,
     outcome: str = OUTCOME_MISSING,
     single_statement: bool = False,
+    provenance: bool = True,
 ) -> list[tuple[str, Evidence]]:
     """Classify shell-style lines whose commands share one recorded outcome.
 
@@ -1030,18 +1036,20 @@ def scan_session_evidence(
     success provably belongs to that command. With ``single_statement`` the
     whole text is one tool invocation that received one result; if it spans
     several logical lines, no command in it can claim that result. Provenance
-    statements count as use regardless of outcome; everything else stays a
-    reference.
+    statements count as use regardless of outcome only while ``provenance`` is
+    on, which is right for a mixed plain-text log but never for the text of a
+    tool command; everything else stays a reference.
     """
     if outcome not in _USAGE_DETAILS and outcome not in _DEMOTED_DETAILS:
         raise ValueError(f"Unknown session outcome: {outcome}")
     multiline = single_statement and sum(1 for _ in _logical_session_lines(text)) > 1
 
     def classify(line: str) -> Classification:
-        classified: Classification = [
-            (repository, True, PROVENANCE_DETAIL)
-            for repository in _provenance_repositories(line)
-        ]
+        classified: Classification = []
+        if provenance:
+            classified.extend(
+                (repository, True, PROVENANCE_DETAIL) for repository in _provenance_repositories(line)
+            )
         analysis = analyze_command_line(line)
         if outcome not in _PROMOTING_OUTCOMES:
             detail, meaningful = _DEMOTED_DETAILS[outcome], False

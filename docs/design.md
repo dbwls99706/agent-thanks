@@ -89,13 +89,18 @@ records `ok` with basis `successful_post_tool_event`. The contract is never
 inferred from the payload, because hook payloads from different agents share
 the same field names and the Codex post-tool event also fires for failed
 commands. Every entry carries the hook log schema marker, the agent, the hook
-event, the tool call id, the command, the status, and the basis; a payload
-whose event is not a post-tool event is never recorded, and the Claude Code
-success basis requires the event to be exactly `PostToolUse`. `stop` treats
-the hook log as the authority for actions. A file without the schema marker
-is not a hook log, whatever keys it has. An entry's success counts only when
-the entry is complete: a known agent, a promoting basis, a non-empty tool call
-id, and a non-empty command. Entries that share a tool call id combine failure
+event, the tool, the tool call id, the command, the status, and the basis; a
+payload whose event is not a post-tool event is never recorded. A failure
+always wins: an explicit failure in the response or a Claude Code
+`PostToolUseFailure` event records `error`. A success is recorded, and later
+counted, only through a row of the promotion matrix: Claude Code, `PostToolUse`,
+`Bash`, and the successful-event basis; or Codex, `PostToolUse`, `Bash`, and an
+explicit exit status of 0. Gemini has no row, because its hooks define no
+success signal. `stop` treats the hook log as the authority for actions. A
+file without the schema marker is not a hook log, whatever keys it has, and a
+log with any corrupted or foreign line keeps its failures but proves no
+success. An entry's success counts only when the entry is complete: a matrix
+row, a non-empty tool call id, and a non-empty command. Entries that share a tool call id combine failure
 first, in the log's own evidence as well as in the override, so a call
 recorded as failed once never counts, and entries that disagree about their
 command are never ok. The log's status replaces the transcript's own result
@@ -103,9 +108,9 @@ for a call only when the call id and the exact command text both match; a
 call whose recorded command differs from the log's is a conflict, a transcript
 command the log never saw stays unconfirmed, and only `ok` entries are
 promoted. The demotion is symmetric: a hook entry whose call id the transcript
-records with a different command, or reuses for different calls, is a conflict
-too, so a disagreement between the two sources never leaves a success standing
-on either side. The scanner applies these rules whenever a hook log and a
+records with a different command, reuses for different calls, or records with
+an explicit failure is demoted too, so a disagreement between the two sources
+never leaves a success standing on either side. The scanner applies these rules whenever a hook log and a
 transcript are scanned together, from the hooks or from `scan --session`. The
 transcript is merged for prose provenance and for the calls the log confirms.
 With `--from gemini` the hooks print `{}` when they have nothing to say,
@@ -151,23 +156,34 @@ A command becomes verified use only when every condition below holds; each is
 enforced in one place, and changing any one of them in a recorded session must
 leave the command a reference:
 
-1. A verified agent, event, and schema: a hook entry needs the schema marker,
-   a known agent, a post-tool event, and a promoting basis
-   (`hook_entry_status`); a transcript result needs a result object or a Codex
-   call record of a Codex shell tool (`_result_of`).
-2. A non-empty tool call id that the transcript uses for this call alone
-   (`_index_calls`, `_command_outcome`).
+1. A verified agent, event, tool, and schema: a hook entry needs the schema
+   marker and an (agent, event, tool, basis) row of `HOOK_PROMOTION_MATRIX`,
+   checked when it is recorded (`_hook_outcome`) and again when it is read
+   (`hook_entry_status`), inside a log without corrupted lines
+   (`_hook_log_entries`); a transcript result needs a result object or a
+   Codex call record of a Codex shell tool (`_result_of`).
+2. A non-empty tool call id indexed at an envelope position with exactly this
+   call's fingerprint and for this call alone; a call found anywhere else, or
+   with another fingerprint, claims nothing (`_index_calls`,
+   `_command_outcome`).
 3. The identical command text in the hook entry and the transcript call when
    both exist, enforced on both sides (`_command_outcome`,
    `scan_hook_log_evidence`, `combine_hook_entries`).
 4. A single logical line (`scan_session_evidence` with `single_statement`).
 5. An allowed result envelope with an exact success signal
-   (`result_status`).
-6. A command structure that changes neither the environment nor the control
-   flow: a single command or a pure `&&` chain, without `env` assignments,
-   `set`, `export`, `printf`, or variable assignments (`analyze_command_line`).
-7. No conflicting signal: every result and every hook entry for the call
-   combines failure first (`combine_statuses`, `combine_hook_entries`).
+   (`result_status`); provenance phrases never count inside a command
+   (`scan_session_evidence` with `provenance` off).
+6. A shell structure that lets the recorded result be attributed to the
+   repository command: a single command or a pure `&&` chain of trivially safe
+   segments, without `env` assignments, `set`, `export`, `printf`, or variable
+   assignments (`analyze_command_line`).
+7. No conflicting signal: every result and every hook entry for the call, from
+   every source scanned together, combines failure first (`combine_statuses`,
+   `combine_hook_entries`, `scan_hook_log_evidence`, `_command_outcome`).
+
+Session ids become file names through sanitizing plus, whenever sanitizing
+changed anything, a hash of the original id, so two ids that sanitize alike
+never share a log or a report.
 
 Transcript lookups for `--from` return a file only when the project directory
 it records equals the current directory after normalization, and, when the

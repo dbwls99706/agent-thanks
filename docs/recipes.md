@@ -115,7 +115,7 @@ Claude Code users can install the plugin bundled with this repository:
 /plugin install agent-thanks@agent-thanks
 ```
 
-Codex CLI users can run the same two hooks from `~/.codex/hooks.json`; Codex
+Codex CLI users can run the record and stop hooks from `~/.codex/hooks.json`; Codex
 hook payloads name the shell tool `Bash`:
 
 ```json

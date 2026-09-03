@@ -157,7 +157,8 @@ trivially safe (`cd`, `mkdir`, `echo`, and similar; not `set`, `export`,
 runs several lines can exit successfully while the clone failed or never ran,
 so they stay references. Provenance lines that start with `copied from`,
 `adapted from`, or `used code from` and name the repository as their direct
-target count as use on their own.
+target count as use on their own, in agent prose or a plain-text log; the text
+of a tool command is never read as provenance.
 
 Manifest evidence is separate: a newly declared direct dependency counts because
 the project now declares it, not because an install is known to have succeeded.
@@ -273,20 +274,26 @@ ways, and neither interrupts the agent or changes a Star:
    never treated as actions.
 2. **Hooks.** `agent-thanks hook record` appends every executed shell command
    to `.agent-thanks/sessions/<session>.jsonl` as a structured entry with its
-   recorded `status` (`ok`, `error`, or `unknown`) and the `basis` for it. An
-   explicit result in the hook payload always decides; without one, the entry
-   is `unknown` unless the hook runs with `--from claude-code`, whose post-tool
-   event fires only after a successful run. The contract is never inferred
-   from the payload. Entries carry a schema marker, the agent, the event, and
-   the tool call id; a success counts only when the entry is complete and came
-   from a post-tool event, and a `PreToolUse` payload is never recorded.
+   recorded `status` (`ok`, `error`, or `unknown`) and the `basis` for it. A
+   failure always wins: an explicit failure in the payload or a Claude Code
+   `PostToolUseFailure` event records `error`. A success is recorded only
+   through one of two contracts, and the contract is never inferred from the
+   payload: Claude Code with `--from claude-code`, a `PostToolUse` event, and
+   the `Bash` tool, whose event fires only after a successful run; or Codex
+   with `--from codex`, a `PostToolUse` event, its canonical `Bash` tool, and
+   an explicit exit status of 0 in the response. Gemini has no success
+   contract. Entries carry a schema marker, the agent, the event, the tool,
+   and the tool call id; a stored entry counts as a success only when those
+   fields still form one of the two contracts, a `PreToolUse` payload is never
+   recorded, and a log with any corrupted line promotes nothing.
    `agent-thanks hook stop` reads this log as the authority for actions:
    several entries for one tool call combine failure first, the log's status
    overrides the transcript's own result for a call only when the call id and
-   the exact command text both match, a mismatch is a conflict that demotes
-   the hook entry and the transcript command alike, a call id the transcript
-   reuses for different calls is ambiguous, and a transcript command the log
-   never saw stays unconfirmed. The transcript is merged for prose
+   the exact command text both match and the transcript recorded no failure
+   for it, a mismatch or a recorded failure demotes the hook entry and the
+   transcript command alike, a call id the transcript reuses for different
+   calls is ambiguous, and a transcript command the log never saw stays
+   unconfirmed. The transcript is merged for prose
    provenance and for the calls the log confirms. The hook promotes only `ok`
    entries, writes
    `.agent-thanks/reports/<session>.json` (and a copy at
@@ -325,7 +332,7 @@ The repository doubles as a plugin marketplace. Inside Claude Code:
 /plugin install agent-thanks@agent-thanks
 ```
 
-The plugin installs two hooks and one command. After each completed turn that
+The plugin installs three hooks and one command. After each completed turn that
 ran shell commands, the `Stop` hook scans the project and, when a repository
 shows verified use for the first time, shows a one-line notice such as:
 
@@ -345,6 +352,7 @@ Without the plugin, the same hooks work from `.claude/settings.json`:
 {
   "hooks": {
     "PostToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "agent-thanks hook record --from claude-code" }] }],
+    "PostToolUseFailure": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "agent-thanks hook record --from claude-code" }] }],
     "Stop": [{ "hooks": [{ "type": "command", "command": "agent-thanks hook stop --from claude-code" }] }]
   }
 }
@@ -375,7 +383,8 @@ project-local `.codex/hooks.json` loads only when the project's `.codex` layer
 is trusted. The stop payload carries `session_id`, `cwd`, and
 `transcript_path`, so no lookup is needed. Because the Codex post-tool event
 also fires for commands
-that exit with a non-zero status, a Codex entry is `ok` only when
+that exit with a non-zero status, a Codex entry is `ok` only for a
+`PostToolUse` event of the `Bash` tool whose
 `tool_response` carries a successful exit status: the JSON envelope of the
 `shell` tool (`metadata.exit_code`) or the header the `exec_command` tool
 writes ahead of the program output (`Process exited with code 0`). Anything

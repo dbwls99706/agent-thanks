@@ -25,8 +25,10 @@ All notable changes to this project will be documented in this file.
   program output or bare text; string envelopes are interpreted only for Codex
   call records of Codex's own `shell` and `exec_command` tools; several
   results for one call combine failure first; a call id reused for different
-  calls attributes no result; call-shaped objects inside user or tool content
-  are never actions. Only known shell
+  calls, or a call found outside a recognized tool call position, attributes
+  no result; call-shaped objects inside user or tool content are never
+  actions; provenance phrases count in prose only, never inside a command.
+  Only known shell
   tools count; other tools contribute references. In agent prose only
   line-initial provenance statements count as use. Tool output, user prompts,
   and hidden reasoning are never actions.
@@ -46,18 +48,27 @@ All notable changes to this project will be documented in this file.
   entry points for agent hooks. `record` keeps a structured per-session log
   with each command's recorded status and basis, treating the Claude Code
   success-only post-tool event as a success basis only when started with
-  `--from claude-code` and only for a `PostToolUse` payload, never recording
-  pre-tool events; every entry carries a schema marker, the agent, the event,
-  and the tool call id, and a success counts only when the entry is complete.
+  `--from claude-code` and only for a `PostToolUse` payload of the `Bash` tool,
+  never recording pre-tool events; a Codex entry is `ok` only for a
+  `PostToolUse` payload of its canonical `Bash` tool with an explicit exit
+  status of 0; a Claude Code `PostToolUseFailure` payload records an error;
+  Gemini has no success contract. Every entry carries a schema marker, the
+  agent, the event, the tool, and the tool call id; a stored success counts
+  only while those fields still form one of the two contracts, and a log with
+  any corrupted line promotes nothing.
   `stop` treats that log as the authority for actions, combining several
   entries for one call failure first, overriding the transcript's own result
-  only when call id and exact command text both match, leaving mismatches and
-  transcript commands the log never saw unconfirmed, promotes successful
+  only when call id and exact command text both match and the transcript
+  recorded no failure, leaving mismatches and transcript commands the log
+  never saw unconfirmed, promotes successful
   entries only, writes per-session reports, and announces newly verified
   repositories once per session, without ever changing a Star. With
   `--from gemini` the hooks answer `{}` when silent, as Gemini's hook contract
   requires.
 - Bundle a Claude Code plugin marketplace with hooks and a `/thanks` command.
+- Name hook logs and reports after a sanitized session id plus a hash of the
+  original whenever sanitizing changed it, so distinct sessions never share a
+  file.
 - Document pip and release-wheel installation for environments without `pipx`.
 
 ## 0.4.2 - 2026-09-02

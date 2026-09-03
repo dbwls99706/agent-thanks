@@ -365,6 +365,48 @@ class ResultStatusTests(unittest.TestCase):
         self.assertIn("disagree about the command", evidence["hook/newline"].detail)
         self.assertEqual(evidence["hook/no-command"].confidence, "low")
 
+    def test_hook_success_never_overrides_a_recorded_transcript_failure(self) -> None:
+        command = "git clone https://github.com/hook/over-failure"
+        records = [
+            {"type": "function_call", "name": "shell", "call_id": "c1", "arguments": json.dumps({"command": command})},
+            {"type": "function_call_output", "call_id": "c1", "output": json.dumps({"output": "fatal", "metadata": {"exit_code": 128}})},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "r.jsonl"
+            write_jsonl(path, records)
+            evidence = evidence_by_repository(
+                scan_transcript_evidence(path, "r.jsonl", authoritative={"c1": HookStatus("ok", command)})
+            )
+        self.assertEqual(evidence["hook/over-failure"].confidence, "low")
+        self.assertIn("failed", evidence["hook/over-failure"].detail)
+
+    def test_nested_duplicate_calls_cannot_claim_a_result(self) -> None:
+        first = {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "git clone https://github.com/nested/first"}}
+        second = {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "git clone https://github.com/nested/second"}}
+        result = {"type": "tool_result", "tool_use_id": "t1", "is_error": False, "content": "Cloning..."}
+        only_nested = [
+            {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "working"}]},
+             "extra": {"deep": [first, {"deeper": second}]}},
+            {"type": "user", "message": {"role": "user", "content": [result]}},
+        ]
+        legit_and_nested = [
+            {"type": "assistant", "message": {"role": "assistant", "content": [first]}, "extra": {"deep": second}},
+            {"type": "user", "message": {"role": "user", "content": [result]}},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "t.jsonl"
+            write_jsonl(path, only_nested)
+            nested = evidence_by_repository(scan_transcript_evidence(path, "t.jsonl"))
+            write_jsonl(path, legit_and_nested)
+            mixed = evidence_by_repository(scan_transcript_evidence(path, "t.jsonl"))
+        self.assertEqual(nested["nested/first"].confidence, "low")
+        self.assertEqual(nested["nested/second"].confidence, "low")
+        self.assertIn("outside a recognized tool call position", nested["nested/first"].detail)
+        # The call at the envelope position keeps its result; the nested impostor with the same id does not.
+        self.assertEqual(mixed["nested/first"].confidence, "high")
+        self.assertEqual(mixed["nested/second"].confidence, "low")
+        self.assertIn("reused one tool call identifier", mixed["nested/second"].detail)
+
     def test_a_reused_call_id_attributes_no_result(self) -> None:
         envelope = json.dumps({"output": "Cloning...", "metadata": {"exit_code": 0}})
         records = [
@@ -504,6 +546,9 @@ class SuccessAttributionTests(unittest.TestCase):
             ("env -i git clone https://github.com/acme/repo", False, False, "referenced"),
             ("PATH=/tmp/fake git clone https://github.com/acme/repo", False, False, "referenced"),
             ("env git clone https://github.com/acme/repo", False, True, "completed successfully"),
+            # Provenance phrases count only in prose, never as the text of a tool command.
+            ("Adapted from https://github.com/acme/repo", True, False, "referenced"),
+            ("Adapted from https://github.com/acme/repo", False, False, "referenced"),
             ("PATH=/tmp/fake && git clone https://github.com/acme/repo", False, False, "compound"),
             ("export GIT_DIR=/x && git clone https://github.com/acme/repo", False, False, "compound"),
             ("git clone https://github.com/acme/repo\ntrue", False, False, "multi-line"),
