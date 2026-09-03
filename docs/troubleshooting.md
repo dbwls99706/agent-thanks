@@ -88,11 +88,65 @@ meaningfully reused. It remains visible in reports and optional Markdown export,
 but it is not eligible for the Star flow. Passing it through `--repo` returns a
 non-zero error rather than overriding its confidence.
 
+A command from a plain-text log stays low because the log records no result;
+add `--trust-session` only when you can vouch that the commands succeeded. A
+command from a transcript stays low when its recorded result failed, cannot be
+judged, or is missing, and when the statement combines commands with `;`,
+`||`, `|`, or `&`, wraps the command in `env` with an assignment, chains it
+after `set`, `export`, `printf`, or a variable assignment, or names the
+executable with a path such as `/tmp/fake/git` or `./git`, because a
+successful exit then does not belong to the real repository command. When a hook
+log exists for the session, it is the authority: a transcript command whose
+success the log did not confirm, whose command text differs from the log's
+entry, or whose call id the transcript reuses stays low as well, and a hook
+entry stays low when the transcript recorded a failure for the same call (even
+without the call record) or when the log contains a corrupted line. A result
+recorded outside the position its agent writes, such as a Claude Code
+`tool_result` inside an assistant message, is never a success, and a
+transcript with an unparsable line keeps every command a reference. A
+provenance phrase typed as a tool command is a reference, not provenance.
+Gemini CLI
+commands stay low because Gemini records failures
+explicitly but marks success only by their absence, which is never accepted.
+The evidence detail names which case applied.
+
 Use an explicit provenance phrase such as `adapted from` only when it truthfully
 describes the task. The phrase must start its line and point directly at the
 repository, as in `Adapted from https://github.com/owner/repository`; a phrase
 buried inside a longer sentence stays a review-only reference. Do not edit
 transcripts merely to force a high-confidence classification.
+
+## Gemini CLI produced no report
+
+Gemini CLI's `AfterAgent` hook has not fired reliably in every version. When a
+turn ends without a report, run the lookup by hand:
+
+```bash
+agent-thanks scan --from gemini
+```
+
+It reads the newest transcript under `~/.gemini/tmp` whose recorded project
+directory equals the current one. Gemini results stay review-only either way.
+
+## The agent hook announced nothing
+
+`agent-thanks hook stop` prints a notice only when a repository shows verified
+use for the first time in that agent session; later turns of the same session
+stay silent. Check `.agent-thanks/reports/<session>-<hash>.json` (or the latest
+copy at `.agent-thanks/report.json`) for the full result, including references
+and unresolved dependencies. The hook also stays silent when the turn ran no shell
+commands, when every clone or install in the turn failed or left no judgeable
+result (every Gemini CLI turn, until Gemini records an explicit success; with
+`--from codex` or `--from gemini` the hook then prints `{}`), when a hook log
+entry and the transcript disagree about the command behind one tool call, when
+the payload carries neither a session identifier nor a transcript path, when
+the transcript path is missing and `--from` cannot find a
+transcript that records both the project directory and the session identifier
+exactly (a file name alone is not enough), or when `--from` cannot find a
+transcript whose recorded directory and session match, or when `agent-thanks`
+is not on `PATH` for the agent's shell. Only
+known shell tools count as commands; other tools contribute references. Hook
+errors go to standard error and never block the agent.
 
 ## Interactive terminal required
 
@@ -114,6 +168,17 @@ exist. Old configuration files are ignored and do not need to be removed.
 Successful Stars are not hidden or rolled back automatically. The CLI prints an
 Undo command containing the completed subset before returning a non-zero exit
 code. Run that command if the batch should be reverted.
+
+## Hook logs keep raw commands
+
+`.agent-thanks/sessions` stores the exact text of every shell command the agent
+ran, for 30 days, so that later turns can be judged; a command such as
+`TOKEN=... curl ...` lands there verbatim. On POSIX systems the directory and
+its files are created readable by their owner only and tightened on every run;
+Windows keeps the profile's own access control. A symbolic link anywhere in the
+state directory makes the hooks refuse to write or prune, with a note on
+standard error. Delete the directory whenever you want to drop the history, or
+remove the hook to stop recording.
 
 ## The report contains a local path
 

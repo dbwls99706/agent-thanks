@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import os
 from pathlib import Path
+import re
+import stat
 import shutil
 import subprocess
 import sys
@@ -14,9 +19,27 @@ from .github import GitHubClient, GitHubError, validate_repository
 from .models import Candidate, Evidence, Report
 from .resolver import PackageRepositoryResolver
 from .scanner import ProjectScanner, ScanError
+from .transcripts import (
+    RESULT_ERROR,
+    RESULT_OK,
+    RESULT_UNKNOWN,
+    is_shell_tool,
+    HOOK_LOG_SCHEMA,
+    canonical_command,
+    load_json,
+    HOOK_PROMOTION_MATRIX,
+    locate_transcript,
+    result_status,
+    transcript_locations,
+)
 
 
 DEFAULT_REPORT = ".agent-thanks-report.json"
+STATE_DIRECTORY = ".agent-thanks"
+POST_TOOL_EVENTS = frozenset({"PostToolUse", "PostToolUseFailure", "AfterTool"})
+JSON_STDOUT_AGENTS = frozenset({"codex", "gemini"})
+SESSION_LOG_MAX_AGE_SECONDS = 30 * 24 * 3600
+AGENTS = ("claude-code", "codex", "gemini")
 
 
 class InteractionError(RuntimeError):
@@ -99,6 +122,38 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor.add_argument("--repo", type=Path, default=Path.cwd(), help="Project root")
 
+    hook = commands.add_parser(
+        "hook",
+        help="Entry points for coding-agent hooks; detection only, never a Star",
+    )
+    hook_commands = hook.add_subparsers(dest="hook_command", required=True)
+    record = hook_commands.add_parser(
+        "record",
+        help=(
+            "Append an executed shell command with its recorded outcome to "
+            f"{STATE_DIRECTORY}/sessions/<session>-<hash>.jsonl"
+        ),
+    )
+    record.add_argument("payload", nargs="?", help="Hook JSON; read from stdin when omitted")
+    record.add_argument(
+        "--from",
+        dest="agent",
+        choices=AGENTS,
+        help="Agent whose hook contract applies when the payload records no result",
+    )
+    stop = hook_commands.add_parser(
+        "stop",
+        help="Scan the finished turn and announce verified repositories without starring",
+    )
+    stop.add_argument("payload", nargs="?", help="Hook JSON; read from stdin when omitted")
+    stop.add_argument(
+        "--from",
+        dest="agent",
+        choices=AGENTS,
+        help="Locate this agent's transcript when the payload carries no transcript path",
+    )
+    stop.add_argument("--offline", action="store_true", help="Skip package registry lookups")
+
     return parser
 
 
@@ -117,6 +172,12 @@ def _add_scan_arguments(parser: argparse.ArgumentParser) -> None:
         help="Agent transcript or log file; repeatable, '-' reads stdin",
     )
     parser.add_argument(
+        "--from",
+        dest="agent",
+        choices=AGENTS,
+        help="Scan the newest transcript this coding agent wrote for the project",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=Path(DEFAULT_REPORT),
@@ -126,6 +187,14 @@ def _add_scan_arguments(parser: argparse.ArgumentParser) -> None:
         "--offline",
         action="store_true",
         help="Do not query package registries to map packages to repositories",
+    )
+    parser.add_argument(
+        "--trust-session",
+        action="store_true",
+        help=(
+            "Attest that the commands in plain-text session logs completed successfully; "
+            "without it those commands stay review-only references"
+        ),
     )
 
 
@@ -149,6 +218,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _unstar(args)
         if args.command == "doctor":
             return _doctor(args)
+        if args.command == "hook":
+            return _hook(args)
     except (OSError, ValueError, InteractionError, ScanError, GitHubError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
@@ -161,7 +232,26 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _build_report(args: argparse.Namespace) -> Report:
     resolver = PackageRepositoryResolver(offline=args.offline)
-    return ProjectScanner(args.repo, base=args.base, resolver=resolver).scan(args.session)
+    sessions = list(args.session)
+    if args.agent:
+        sessions.append(_locate_agent_transcript(args.agent, args.repo))
+    scanner = ProjectScanner(
+        args.repo, base=args.base, resolver=resolver, trust_sessions=args.trust_session
+    )
+    return scanner.scan(sessions)
+
+
+def _locate_agent_transcript(agent: str, root: Path) -> Path:
+    cwd = root.expanduser().resolve()
+    transcript = locate_transcript(agent, cwd, Path.home())
+    if transcript is None:
+        searched = ", ".join(str(path) for path in transcript_locations(agent, cwd, Path.home()))
+        raise ValueError(
+            f"No {agent} transcript found for {cwd} (searched: {searched}). "
+            "Pass the transcript path with --session instead."
+        )
+    print(f"Transcript: {transcript}", file=sys.stderr)
+    return transcript
 
 
 def _demo() -> int:
@@ -174,8 +264,8 @@ def _demo() -> int:
                 [
                     Evidence(
                         kind="session_usage",
-                        source="demo-session.log:2",
-                        detail="Session shows a substantive repository-use command",
+                        source="demo-session.jsonl:2",
+                        detail="Session ran a repository-use command that completed successfully",
                         confidence="high",
                         meaningful=True,
                     )
@@ -186,7 +276,7 @@ def _demo() -> int:
                 [
                     Evidence(
                         kind="session_reference",
-                        source="demo-session.log:1",
+                        source="demo-session.jsonl:1",
                         detail="Repository was referenced in the session; verify actual reuse",
                         confidence="low",
                         meaningful=False,
@@ -198,8 +288,8 @@ def _demo() -> int:
                 [
                     Evidence(
                         kind="session_usage",
-                        source="demo-session.log:3",
-                        detail="Session shows a substantive repository-use command",
+                        source="demo-session.jsonl:4",
+                        detail="Session states that code was adapted from this repository",
                         confidence="high",
                         meaningful=True,
                     )
@@ -422,6 +512,423 @@ def _print_undo(repositories: list[str]) -> None:
         return
     values = " ".join(repositories)
     print(f"Undo this batch: agent-thanks unstar {values}")
+
+
+def _hook(args: argparse.Namespace) -> int:
+    """Run a hook entry point. Hooks never fail the agent and never touch GitHub."""
+    output: dict[str, object] | None = None
+    try:
+        payload = _hook_payload(args.payload)
+        if args.hook_command == "record":
+            _hook_record(payload, agent=args.agent)
+        else:
+            output = _hook_stop(payload, agent=args.agent, offline=args.offline)
+    except Exception as error:  # noqa: BLE001 - a hook must never interrupt the agent
+        print(f"agent-thanks hook: {error}", file=sys.stderr)
+    if output is None and args.agent in JSON_STDOUT_AGENTS:
+        # Codex and Gemini parse the standard output of a successful hook as JSON,
+        # so a hook with nothing to say answers with an empty object.
+        output = {}
+    if output is not None:
+        print(json.dumps(output))
+    return 0
+
+
+def _hook_payload(raw: str | None) -> dict[str, object]:
+    if raw is None:
+        if sys.stdin is None or sys.stdin.isatty():
+            return {}
+        raw = sys.stdin.read()
+    if not raw.strip():
+        return {}
+    payload = load_json(raw)  # a duplicated key is a malformed payload, never a quiet override
+    return payload if isinstance(payload, dict) else {}
+
+
+def _hook_root(payload: dict[str, object]) -> Path:
+    cwd = payload.get("cwd")
+    root = Path(cwd) if isinstance(cwd, str) and cwd else Path.cwd()
+    return root.expanduser().resolve()
+
+
+def _state_directory(root: Path) -> Path:
+    state = _private_directory(root / STATE_DIRECTORY)
+    ignore = state / ".gitignore"
+    if not ignore.exists() and not ignore.is_symlink():
+        _private_write(ignore, "*\n")
+    _tighten_state(state)
+    return state
+
+
+def _private_directory(path: Path) -> Path:
+    """Create a state directory readable by its owner only, refusing symlinks.
+
+    The directory itself must be a real directory: a symlink in its place
+    would let another party redirect logs, reports, and pruning elsewhere.
+    Existing directories are tightened to 0700 on POSIX.
+    """
+    if path.is_symlink():
+        raise RuntimeError(f"Refusing to use {path}: it is a symbolic link")
+    path.mkdir(exist_ok=True)
+    if not stat.S_ISDIR(os.lstat(path).st_mode):
+        raise RuntimeError(f"Refusing to use {path}: not a directory")
+    if os.name != "nt":
+        os.chmod(path, 0o700)
+    return path
+
+
+def _open_private(path: Path, flags: int) -> int:
+    """Open a state file without following links and only if it is a regular file.
+
+    The parent directory is opened first (no follow, must be a directory) and
+    the file is opened relative to it. ``O_NONBLOCK`` keeps a FIFO left at the
+    path from blocking the hook; the descriptor is then verified with ``fstat``
+    and closed unless it is a regular file.
+    """
+    if path.is_symlink():
+        raise RuntimeError(f"Refusing to open {path}: it is a symbolic link")
+    try:
+        existing = os.lstat(path)
+    except FileNotFoundError:
+        existing = None
+    if existing is not None and not stat.S_ISREG(existing.st_mode):
+        raise RuntimeError(f"Refusing to open {path}: not a regular file")
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    parent_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | no_follow | getattr(os, "O_CLOEXEC", 0)
+    parent = os.open(path.parent, parent_flags)
+    try:
+        if not stat.S_ISDIR(os.fstat(parent).st_mode):
+            raise RuntimeError(f"Refusing to open {path}: parent is not a directory")
+        file_flags = flags | no_follow | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+        if os.open in os.supports_dir_fd:
+            descriptor = os.open(path.name, file_flags, 0o600, dir_fd=parent)
+        else:  # pragma: no cover - platforms without dir_fd
+            descriptor = os.open(path, file_flags, 0o600)
+    finally:
+        os.close(parent)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise RuntimeError(f"Refusing to use {path}: not a regular file")
+        if os.name != "nt":
+            os.fchmod(descriptor, 0o600)
+    except Exception:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _private_write(path: Path, text: str, *, append: bool = False) -> None:
+    """Write a state file readable by its owner only, refusing symlinks and special files.
+
+    Appends open the existing regular file directly; whole-file writes go to a
+    private temporary file in the same directory that then replaces the target,
+    so a target is never truncated before it is known to be acceptable.
+    """
+    if append:
+        descriptor = _open_private(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return
+    if path.is_symlink():
+        raise RuntimeError(f"Refusing to write {path}: it is a symbolic link")
+    try:
+        existing = os.lstat(path)
+    except FileNotFoundError:
+        existing = None
+    if existing is not None and not stat.S_ISREG(existing.st_mode):
+        raise RuntimeError(f"Refusing to write {path}: not a regular file")
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    descriptor = _open_private(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def _private_read(path: Path) -> str | None:
+    """Read a state file without following links; None when it does not exist."""
+    if path.is_symlink():
+        raise RuntimeError(f"Refusing to read {path}: it is a symbolic link")
+    if not path.exists():
+        return None
+    descriptor = _open_private(path, os.O_RDONLY)
+    with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+        return handle.read()
+
+
+def _tighten_state(state: Path) -> None:
+    """Tighten every known state file and directory to owner-only access on POSIX."""
+    if os.name == "nt":
+        return
+    for name in ("sessions", "reports"):
+        directory = state / name
+        try:
+            if stat.S_ISDIR(os.lstat(directory).st_mode):
+                os.chmod(directory, 0o700)
+        except OSError:
+            continue
+    known = (
+        (state, (".gitignore", "report.json", "announced.json")),
+        (state / "sessions", (".jsonl",)),
+        (state / "reports", (".json",)),
+    )
+    for directory, suffixes in known:
+        try:
+            if not stat.S_ISDIR(os.lstat(directory).st_mode):
+                continue
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if not entry.is_file(follow_symlinks=False) or not entry.name.endswith(suffixes):
+                        continue
+                    try:
+                        descriptor = os.open(entry.path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+                    except OSError:
+                        continue
+                    try:
+                        if stat.S_ISREG(os.fstat(descriptor).st_mode):
+                            os.fchmod(descriptor, 0o600)
+                    except OSError:
+                        pass
+                    finally:
+                        os.close(descriptor)
+        except OSError:
+            continue
+
+
+def _is_private_regular_file(path: Path) -> bool:
+    try:
+        return stat.S_ISREG(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
+def _session_id(payload: dict[str, object]) -> str | None:
+    for key in ("session_id", "sessionId", "thread-id", "thread_id", "conversation_id"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def session_scope(payload: dict[str, object]) -> str | None:
+    """Return the scope a hook payload belongs to, or None when it has none.
+
+    Every supported hook contract carries a session or thread identifier, which
+    scopes the log, the report, and the announcements. A payload without one is
+    scoped by its transcript path instead; without either it has no scope, so
+    nothing is recorded for it and nothing is announced.
+    """
+    session_id = _session_id(payload)
+    if session_id is not None:
+        return f"id:{session_id}"
+    transcript = payload.get("transcript_path")
+    if isinstance(transcript, str) and transcript.strip():
+        return f"transcript:{transcript.strip()}"
+    return None
+
+
+def session_file_stem(scope: str) -> str:
+    """Return the file stem for a scope: a sanitized prefix plus a hash of the whole scope."""
+    label = scope.split(":", 1)[1] if ":" in scope else scope
+    prefix = re.sub(r"[^A-Za-z0-9_.-]", "_", label)[:40].strip("._-") or "session"
+    return f"{prefix}-{hashlib.sha256(scope.encode('utf-8')).hexdigest()[:16]}"
+
+
+def _session_log(state: Path, scope: str) -> Path:
+    return _private_directory(state / "sessions") / f"{session_file_stem(scope)}.jsonl"
+
+
+def _report_path(state: Path, scope: str | None) -> Path:
+    if scope is None:
+        return state / "report.json"
+    return _private_directory(state / "reports") / f"{session_file_stem(scope)}.json"
+
+
+def _infer_agent(payload: dict[str, object]) -> str | None:
+    """Infer only what is safe to infer: a Codex notify payload by its distinctive shape.
+
+    Hook payloads from different agents share ``hook_event_name`` and
+    ``transcript_path``, so no agent-specific contract is ever inferred from
+    them; that needs an explicit ``--from``.
+    """
+    kind = payload.get("type")
+    if (isinstance(kind, str) and kind.startswith("agent-turn")) or "thread-id" in payload:
+        return "codex"
+    return None
+
+
+def _hook_outcome(payload: dict[str, object], agent: str | None) -> tuple[str, str]:
+    """Return (status, basis) for a post-tool hook payload.
+
+    A failure always wins: an explicit failure in ``tool_response`` or a Claude
+    Code ``PostToolUseFailure`` event records ``error``. A success is recorded
+    only through a promoting contract from ``HOOK_PROMOTION_MATRIX``: Codex with
+    a ``PostToolUse`` event for its canonical ``Bash`` tool and an explicit exit
+    status of 0 in the response, or Claude Code with a ``PostToolUse`` event for
+    ``Bash``, whose event fires only after a successful run. The response is
+    judged with the success fields of the agent named by ``--from`` only, so a
+    text or JSON envelope counts only for Codex. Every other combination records
+    ``unknown``.
+    """
+    event = payload.get("hook_event_name")
+    tool = payload.get("tool_name") or payload.get("tool")
+    status = result_status(payload.get("tool_response"), agent=agent)
+    if status == RESULT_ERROR:
+        return RESULT_ERROR, "tool_response"
+    if event == "PostToolUseFailure":
+        return RESULT_ERROR, "post_tool_failure_event"
+    if status == RESULT_OK and (agent, event, tool, "exit_status") in HOOK_PROMOTION_MATRIX:
+        return RESULT_OK, "exit_status"
+    if (agent, event, tool, "successful_post_tool_event") in HOOK_PROMOTION_MATRIX:
+        return RESULT_OK, "successful_post_tool_event"
+    return RESULT_UNKNOWN, "no_result"
+
+
+def _hook_record(payload: dict[str, object], *, agent: str | None) -> None:
+    event = payload.get("hook_event_name")
+    if event is not None and event not in POST_TOOL_EVENTS:
+        return None  # a pre-tool or unrelated event says nothing about a completed command
+    tool_name = payload.get("tool_name") or payload.get("tool")
+    tool_input = payload.get("tool_input") or payload.get("input")
+    if not is_shell_tool(tool_name) or not isinstance(tool_input, dict):
+        return None
+    command = tool_input.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return None
+    scope = session_scope(payload)
+    if scope is None:
+        return None  # nothing identifies the session, so the command cannot be attributed to one
+    status, basis = _hook_outcome(payload, agent)
+    entry = {
+        "schema": HOOK_LOG_SCHEMA,
+        "agent": agent,
+        "event": event,
+        "tool": tool_name,
+        "session_id": _session_id(payload),
+        "scope": scope,
+        "tool_call_id": payload.get("tool_use_id") or payload.get("tool_call_id"),
+        "command": canonical_command(command),
+        "status": status,
+        "basis": basis,
+        "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    state = _state_directory(_hook_root(payload))
+    log = _session_log(state, scope)
+    _private_write(log, json.dumps(entry, ensure_ascii=False) + "\n", append=True)
+    return None
+
+
+def _hook_stop(
+    payload: dict[str, object], *, agent: str | None, offline: bool
+) -> dict[str, object] | None:
+    root = _hook_root(payload)
+    state = _state_directory(root)
+    session_id = _session_id(payload)
+    scope = session_scope(payload)
+    _prune_state(state)
+
+    # The structured hook log is the authority for actions: the scanner reads its
+    # statuses as overrides for the transcript's own results of the same tool
+    # calls and demotes whatever the two sources disagree about. The transcript
+    # adds prose provenance; a command the hook log never saw stays unconfirmed.
+    sources: list[Path] = []
+    if scope is not None:
+        log = _session_log(state, scope)
+        if _is_private_regular_file(log):
+            sources.append(log)
+    transcript = payload.get("transcript_path")
+    if isinstance(transcript, str) and Path(transcript).is_file():
+        sources.append(Path(transcript))
+    else:
+        agent = agent or _infer_agent(payload)
+        if agent is not None:
+            located = locate_transcript(agent, root, Path.home(), session_id=session_id)
+            if located is not None:
+                sources.append(located)
+    if not sources:
+        return None
+
+    resolver = PackageRepositoryResolver(offline=offline)
+    report = ProjectScanner(root, base="HEAD", resolver=resolver).scan(sources)
+    report_path = _report_path(state, scope)
+    _private_write(report_path, report.to_json())
+    latest = state / "report.json"
+    if report_path != latest:
+        _private_write(latest, report.to_json())
+
+    if scope is None:
+        return None  # without a scope, announcements could not be kept apart per session
+    announced = _load_announced(state / "announced.json")
+    key = scope
+    seen = {item.casefold() for item in announced.get(key, [])}
+    fresh = [
+        candidate.repository
+        for candidate in report.candidates
+        if candidate.recommended and candidate.repository.casefold() not in seen
+    ]
+    if not fresh:
+        return None
+    announced[key] = sorted(seen | {item.casefold() for item in fresh})
+    _private_write(state / "announced.json", json.dumps(announced, indent=2, sort_keys=True) + "\n")
+    return {"systemMessage": _announcement(fresh, report_path, root)}
+
+
+def _load_announced(path: Path) -> dict[str, list[str]]:
+    text = _private_read(path)
+    if text is None:
+        return {}
+    try:
+        loaded = load_json(text)
+    except ValueError:
+        return {}
+    if isinstance(loaded, list):
+        return {"legacy": [str(item) for item in loaded]}
+    if isinstance(loaded, dict):
+        return {
+            str(key): [str(item) for item in value]
+            for key, value in loaded.items()
+            if isinstance(value, list)
+        }
+    return {}
+
+
+def _prune_state(state: Path) -> None:
+    """Delete stale logs and reports, and only regular files inside the real state directories."""
+    cutoff = time.time() - SESSION_LOG_MAX_AGE_SECONDS
+    for name, suffix in (("sessions", ".jsonl"), ("reports", ".json")):
+        directory = state / name
+        try:
+            if directory.is_symlink() or not stat.S_ISDIR(os.lstat(directory).st_mode):
+                continue
+        except OSError:
+            continue
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                try:
+                    if not entry.name.endswith(suffix) or not entry.is_file(follow_symlinks=False):
+                        continue
+                    if entry.stat(follow_symlinks=False).st_mtime < cutoff:
+                        os.unlink(entry.path)
+                except OSError:
+                    continue
+
+
+def _announcement(repositories: list[str], report_path: Path, root: Path) -> str:
+    try:
+        shown = report_path.relative_to(root).as_posix()
+    except ValueError:
+        shown = str(report_path)
+    names = ", ".join(repositories)
+    return (
+        f"agent-thanks: this task shows verified open-source use of {names}. "
+        f"Review the evidence and approve Stars in a terminal: agent-thanks star {shown}"
+    )
 
 
 def _doctor(args: argparse.Namespace) -> int:

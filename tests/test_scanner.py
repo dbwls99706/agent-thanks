@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -13,10 +14,12 @@ def git(root: Path, *args: str) -> None:
 
 
 class ScannerTests(unittest.TestCase):
-    def session_evidence(self, text: str) -> dict[str, Evidence]:
+    def session_evidence(self, text: str, *, trusted: bool = True) -> dict[str, Evidence]:
         return {
             repository: evidence
-            for repository, evidence in ProjectScanner._scan_session(text, "session.log")
+            for repository, evidence in ProjectScanner._scan_session(
+                text, "session.log", trusted=trusted
+            )
         }
 
     def test_scans_new_dependency_and_session_evidence(self) -> None:
@@ -44,12 +47,21 @@ class ScannerTests(unittest.TestCase):
             report = ProjectScanner(
                 root,
                 resolver=PackageRepositoryResolver(offline=True),
+                trust_sessions=True,
             ).scan([session])
             by_name = {item.repository: item for item in report.candidates}
 
             self.assertTrue(by_name["robotics/robot-lib"].recommended)
             self.assertTrue(by_name["BehaviorTree/BehaviorTree.CPP"].recommended)
             self.assertFalse(by_name["example/read-only"].recommended)
+
+            untrusted = ProjectScanner(
+                root, resolver=PackageRepositoryResolver(offline=True)
+            ).scan([session])
+            by_name = {item.repository: item for item in untrusted.candidates}
+            self.assertTrue(by_name["robotics/robot-lib"].recommended)
+            self.assertFalse(by_name["BehaviorTree/BehaviorTree.CPP"].recommended)
+            self.assertIn("recorded no result", by_name["BehaviorTree/BehaviorTree.CPP"].evidence[0].detail)
 
     def test_pinned_requirements_never_resolve_through_the_registry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -133,14 +145,60 @@ class ScannerTests(unittest.TestCase):
         self.assertFalse(evidence["unrelated/reference"].meaningful)
         self.assertEqual(evidence["unrelated/reference"].confidence, "low")
 
-    def test_session_reference_before_command_stays_low(self) -> None:
+    def test_compound_statements_never_prove_the_repository_command_succeeded(self) -> None:
         evidence = self.session_evidence(
             "Compared https://github.com/reference/only; "
             "git clone https://github.com/real/used.git\n"
         )
 
         self.assertFalse(evidence["reference/only"].meaningful)
-        self.assertTrue(evidence["real/used"].meaningful)
+        self.assertFalse(evidence["real/used"].meaningful)
+        self.assertIn("compound shell statement", evidence["real/used"].detail)
+
+    def test_plain_logs_need_an_attestation_to_count(self) -> None:
+        line = "git clone https://github.com/plain/log.git\nAdapted from https://github.com/prose/claim\n"
+        untrusted = self.session_evidence(line, trusted=False)
+        self.assertFalse(untrusted["plain/log"].meaningful)
+        self.assertIn("recorded no result", untrusted["plain/log"].detail)
+        self.assertTrue(untrusted["prose/claim"].meaningful)
+        trusted = self.session_evidence(line)
+        self.assertTrue(trusted["plain/log"].meaningful)
+        self.assertIn("attested", trusted["plain/log"].detail)
+
+    def test_manifest_evidence_and_failed_install_are_reported_separately(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git(root, "init")
+            git(root, "config", "user.name", "Test")
+            git(root, "config", "user.email", "test@example.com")
+            manifest = root / "requirements.txt"
+            manifest.write_text("requests>=2\n", encoding="utf-8")
+            git(root, "add", "requirements.txt")
+            git(root, "commit", "-m", "base")
+            manifest.write_text(
+                "requests>=2\n-e git+https://github.com/acme/tool.git#egg=tool\n", encoding="utf-8"
+            )
+            transcript = root / "transcript.jsonl"
+            transcript.write_text(
+                "\n".join(
+                    json.dumps(record)
+                    for record in [
+                        {"type": "assistant", "message": {"role": "assistant", "content": [
+                            {"type": "tool_use", "id": "t1", "name": "Bash",
+                             "input": {"command": "pip install -e git+https://github.com/acme/tool.git#egg=tool"}}]}},
+                        {"type": "user", "message": {"role": "user", "content": [
+                            {"type": "tool_result", "tool_use_id": "t1", "is_error": True, "content": "error"}]}},
+                    ]
+                ) + "\n",
+                encoding="utf-8",
+            )
+            report = ProjectScanner(root, resolver=PackageRepositoryResolver(offline=True)).scan([transcript])
+            candidate = next(item for item in report.candidates if item.repository == "acme/tool")
+            kinds = {item.kind: item for item in candidate.evidence}
+            self.assertTrue(kinds["direct_dependency"].meaningful)
+            self.assertFalse(kinds["session_reference"].meaningful)
+            self.assertIn("failed", kinds["session_reference"].detail)
+            self.assertTrue(candidate.recommended)
 
     def test_git_clone_option_url_is_not_the_repository_target(self) -> None:
         evidence = self.session_evidence(
@@ -267,7 +325,7 @@ class ScannerTests(unittest.TestCase):
             else:
                 self.assertFalse(item.meaningful, repository)
 
-    def test_conditional_followup_requires_a_known_reachable_status(self) -> None:
+    def test_pure_and_chains_share_the_recorded_success(self) -> None:
         evidence = self.session_evidence(
             "git clone https://github.com/first/used.git && "
             "git submodule add git@github.com:second/used.git vendor/second\n"
@@ -276,11 +334,12 @@ class ScannerTests(unittest.TestCase):
         )
 
         self.assertTrue(evidence["first/used"].meaningful)
-        self.assertFalse(evidence["second/used"].meaningful)
+        self.assertTrue(evidence["second/used"].meaningful)
         self.assertTrue(evidence["known/and"].meaningful)
-        self.assertTrue(evidence["known/or"].meaningful)
+        self.assertFalse(evidence["known/or"].meaningful)
+        self.assertIn("compound shell statement", evidence["known/or"].detail)
 
-    def test_literal_shell_conditions_do_not_promote_unreachable_commands(self) -> None:
+    def test_only_allowlisted_and_chains_are_promoted(self) -> None:
         evidence = self.session_evidence(
             "false && git clone https://github.com/reference/and.git\n"
             "true || git clone https://github.com/reference/or.git\n"
@@ -296,18 +355,25 @@ class ScannerTests(unittest.TestCase):
             "exec /bin/true; git clone https://github.com/reference/exec.git\n"
         )
 
+        # `false && ...` cannot have exited successfully with the clone having run.
         self.assertFalse(evidence["reference/and"].meaningful)
-        self.assertFalse(evidence["reference/or"].meaningful)
-        self.assertFalse(evidence["reference/skipped"].meaningful)
+        # `||`, `|`, `;`, and negation never let a success belong to the clone.
+        for repository in (
+            "reference/or",
+            "reference/skipped",
+            "real/fallback",
+            "reference/grep",
+            "reference/negated",
+            "reference/and-pipe",
+            "reference/or-pipe",
+            "reference/exit",
+            "reference/exec",
+        ):
+            with self.subTest(repository=repository):
+                self.assertFalse(evidence[repository].meaningful)
+        # Arbitrary commands in the chain (`test`, `unknown`) are not on the allowlist.
         self.assertFalse(evidence["reference/test"].meaningful)
-        self.assertFalse(evidence["reference/grep"].meaningful)
         self.assertFalse(evidence["reference/unknown"].meaningful)
-        self.assertFalse(evidence["reference/negated"].meaningful)
-        self.assertFalse(evidence["reference/and-pipe"].meaningful)
-        self.assertFalse(evidence["reference/or-pipe"].meaningful)
-        self.assertFalse(evidence["reference/exit"].meaningful)
-        self.assertFalse(evidence["reference/exec"].meaningful)
-        self.assertTrue(evidence["real/fallback"].meaningful)
 
     def test_provenance_promotes_only_the_repository_after_the_marker(self) -> None:
         evidence = self.session_evidence(
@@ -497,15 +563,16 @@ class ScannerTests(unittest.TestCase):
         self.assertNotIn("reference/option", evidence)
 
     def test_repeated_target_and_reference_produce_one_evidence_item(self) -> None:
-        items = ProjectScanner._scan_session(
-            "git clone https://github.com/owner/repo.git "
-            "# docs https://github.com/owner/repo\n",
-            "session.log",
-        )
+        line = "git clone https://github.com/owner/repo.git # docs https://github.com/owner/repo\n"
+        items = ProjectScanner._scan_session(line, "session.log", trusted=True)
 
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0][0], "owner/repo")
         self.assertTrue(items[0][1].meaningful)
+
+        untrusted = ProjectScanner._scan_session(line, "session.log")
+        self.assertEqual(len(untrusted), 1)
+        self.assertFalse(untrusted[0][1].meaningful)
 
     def test_line_continuation_preserves_the_command_target(self) -> None:
         evidence = self.session_evidence(

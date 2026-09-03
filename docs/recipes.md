@@ -28,7 +28,7 @@ Use the current `HEAD` as the state before working-tree changes:
 agent-thanks run \
   --repo . \
   --base HEAD \
-  --session session.log \
+  --session transcript.jsonl \
   --dry-run
 ```
 
@@ -42,7 +42,7 @@ If the task is the most recent commit:
 agent-thanks run \
   --repo . \
   --base HEAD~1 \
-  --session session.log \
+  --session transcript.jsonl \
   --dry-run
 ```
 
@@ -64,17 +64,101 @@ signal.
 ```bash
 agent-thanks scan \
   --repo . \
-  --session planning.log \
-  --session implementation.log \
-  --session review.log
+  --session planning.jsonl \
+  --session implementation.jsonl \
+  --session review.jsonl
 ```
 
 Evidence for the same repository is deduplicated into one candidate.
 
+## Attest a plain-text command log
+
+A plain-text log records commands but not their results, so its commands stay
+review-only by default. When the log is your own shell history and you can
+vouch that the commands succeeded, attest it explicitly:
+
+```bash
+agent-thanks scan --repo . --session shell-history.log --trust-session
+```
+
+Even then, only single commands and pure `&&` chains count; `git clone URL ||
+true` and similar statements remain references.
+
+## Scan a coding agent transcript
+
+Transcripts are detected automatically when the file is JSON or JSON Lines:
+
+```bash
+agent-thanks scan --repo . --session ~/.claude/projects/-home-me-project/abc123.jsonl
+agent-thanks scan --repo . --session ~/.codex/sessions/2026/09/02/rollout-2026-09-02T10-00-00-abc.jsonl
+```
+
+Let the tool find the newest transcript for the current project:
+
+```bash
+agent-thanks run --from claude-code --dry-run
+agent-thanks scan --from codex --output -
+agent-thanks scan --from gemini
+```
+
+Commands the agent executed count only when the transcript records a
+successful result for that call. In the agent's prose only a line-initial
+`Adapted from https://github.com/owner/repository` counts as use; other URLs
+remain review-only references.
+
+## Record commands with agent hooks
+
+Claude Code users can install the plugin bundled with this repository:
+
+```text
+/plugin marketplace add dbwls99706/agent-thanks
+/plugin install agent-thanks@agent-thanks
+```
+
+Codex CLI users can run the record and stop hooks from `~/.codex/hooks.json`; Codex
+hook payloads name the shell tool `Bash`:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "agent-thanks hook record --from codex" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "agent-thanks hook stop --from codex" }] }]
+  }
+}
+```
+
+Codex runs these only after you review and trust them with `/hooks` inside
+Codex.
+
+Without hooks, point `notify` in `$CODEX_HOME/config.toml` at the stop hook:
+
+```toml
+notify = ["agent-thanks", "hook", "stop", "--from", "codex"]
+```
+
+Gemini CLI users can run the stop hook after each turn from
+`~/.gemini/settings.json`; Gemini results are review-only until Gemini records
+an explicit success:
+
+```json
+{
+  "hooks": {
+    "AfterAgent": [{ "hooks": [{ "name": "agent-thanks", "type": "command", "command": "agent-thanks hook stop --from gemini" }] }]
+  }
+}
+```
+
+After a completed turn that ran shell commands, the report is in
+`.agent-thanks/report.json`. Approve Stars from a terminal:
+
+```bash
+agent-thanks star .agent-thanks/report.json
+```
+
 ## Read a session log from standard input
 
 ```bash
-your-log-command | agent-thanks scan --repo . --session -
+cat implementation.log | agent-thanks scan --repo . --session -
 ```
 
 Standard input stays local. Use a separate interactive `star` command after
@@ -83,7 +167,7 @@ reviewing the saved report.
 ## Work without registry access
 
 ```bash
-agent-thanks run --repo . --session session.log --offline --dry-run
+agent-thanks run --repo . --session transcript.jsonl --offline --dry-run
 ```
 
 Direct GitHub URLs, Git submodules, and GitHub-hosted Go modules still resolve.
@@ -92,7 +176,7 @@ Package names requiring PyPI, npm, or crates.io metadata remain unresolved.
 ## Review now, decide later
 
 ```bash
-agent-thanks scan --repo . --session session.log
+agent-thanks scan --repo . --session transcript.jsonl
 agent-thanks review .agent-thanks-report.json
 agent-thanks export .agent-thanks-report.json --output OPEN_SOURCE_USE.md
 agent-thanks star .agent-thanks-report.json

@@ -1,0 +1,40 @@
+{
+  "description": "Requires the agent-thanks command on PATH. Detection only: nothing here contacts GitHub or changes a Star.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "agent-thanks hook record --from claude-code",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "agent-thanks hook record --from claude-code",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "agent-thanks hook stop --from claude-code",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}

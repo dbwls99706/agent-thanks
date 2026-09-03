@@ -1,0 +1,4 @@
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The agent inspected https://github.com/example/reference-only for background."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "git clone https://github.com/BehaviorTree/BehaviorTree.CPP.git /tmp/behaviortree", "description": "Clone the behavior tree library"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "is_error": false, "content": "Cloning into '/tmp/behaviortree'..."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Adapted from https://github.com/ros-navigation/navigation2."}]}}

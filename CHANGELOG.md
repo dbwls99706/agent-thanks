@@ -4,6 +4,95 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Count a session command as verified use only when its own successful
+  completion is recorded: the recorded result must carry an exact success
+  signal and no failure signal, the tool call must be a single logical line,
+  and the statement must be a single command or an `&&` chain whose other
+  segments are trivially safe (`cd`, `mkdir`, `echo`, and similar; `set`,
+  `export`, `printf`, variable assignments, and `env` wrappers with
+  assignments or options are not, because `set -n` skips execution and an
+  assignment can redirect `PATH` to a fake `git`), and every executable must
+  be named without a path. Failed,
+  conflicting, unjudgeable, and missing results, transcripts without results,
+  multi-line invocations, and compound statements such as
+  `git clone URL || true` or `eval 'exit 0' && git clone URL` stay references,
+  and the evidence names the reason.
+- Treat plain-text session logs as review-only by default, because they record
+  no results; `--trust-session` attests that their commands succeeded.
+- Read coding-agent transcripts (JSON and JSON Lines) with `--session`,
+  pairing recognized shell-tool calls in the supported structured formats
+  (Claude Code, Codex CLI, and Gemini CLI records) with their recorded
+  results. Success is read only from the structured field each agent writes,
+  in the position it writes it (a Claude Code `tool_result` inside a user
+  message, a Codex output item paired with a Codex call record of its own
+  `shell` or `exec_command` tool; Gemini has none), only for calls and results
+  at the positions the agent writes them, only for the agent's own shell tool
+  (`Bash` for Claude Code), only after the call it names, only when every
+  item's own role agrees with its record, only when the envelope can be
+  scanned completely and no contradictory or malformed field anywhere in the
+  whole result record blocks the success, and only when every transcript of
+  the same recorded session and project scanned together agrees about the
+  call, never from program output or bare text; every JSON record and
+  JSON-encoded result is parsed rejecting duplicate keys; a transcript with an
+  unparsable line promotes nothing, in any file; provenance prose counts only
+  at an assistant message position; several
+  results for one call combine failure first; a call id reused for different
+  calls, or a call found outside a recognized tool call position, attributes
+  no result; call-shaped objects inside user or tool content are never
+  actions; provenance phrases count in prose only, never inside a command.
+  Only known shell
+  tools count; other tools contribute references. In agent prose only
+  line-initial provenance statements count as use. Tool output, user prompts,
+  and hidden reasoning are never actions.
+- Recognize Codex `exec_command` results, whose exit code is recorded in a
+  header ahead of the program output, and Codex hooks, whose payloads name the
+  shell tool `Bash`. Code-mode `exec` programs yield references only; the
+  hook log covers the calls they make. Gemini CLI yields review-only
+  references, because its
+  shell tool marks success only by the absence of failure signals.
+- Replace the bundled plain-text example with `examples/session.jsonl`, a
+  transcript whose classification matches `agent-thanks demo`.
+- Add `--from claude-code|codex|gemini` to `scan`, `run`, and `hook stop` to
+  locate the transcript whose recorded project directory equals the current
+  one and whose recorded session identifier matches the hook payload exactly,
+  never by file name alone, honoring `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, and
+  to fail rather than guess.
+- Create the `.agent-thanks` state directory and its files readable by their
+  owner only on POSIX, tightening every known file on each run, because hook
+  logs keep raw shell commands; refuse symbolic links and special files
+  anywhere in the state directory for reads and writes alike, write whole
+  files through a private temporary file, and prune only regular files inside
+  it.
+- Add `agent-thanks hook record` and `agent-thanks hook stop`, detection-only
+  entry points for agent hooks. `record` keeps a structured per-session log
+  with each command's recorded status and basis, treating the Claude Code
+  success-only post-tool event as a success basis only when started with
+  `--from claude-code` and only for a `PostToolUse` payload of the `Bash` tool,
+  never recording pre-tool events; a Codex entry is `ok` only for a
+  `PostToolUse` payload of its canonical `Bash` tool with an explicit exit
+  status of 0; a Claude Code `PostToolUseFailure` payload records an error;
+  Gemini has no success contract. Every entry carries a schema marker, the
+  agent, the event, the tool, and the tool call id; a stored success counts
+  only while those fields still form one of the two contracts, and a log with
+  any corrupted line promotes nothing.
+  `stop` treats that log as the authority for actions, combining several
+  entries for one call failure first, overriding the transcript's own result
+  only when call id and exact command text both match and the transcript
+  recorded no failure, leaving mismatches and transcript commands the log
+  never saw unconfirmed (a failure whose call record is missing from a partial
+  transcript still counts), promotes successful entries only, writes
+  per-session reports, and announces newly verified repositories once per
+  session, without ever changing a Star. With `--from codex` or `--from
+  gemini` the hooks answer `{}` when silent, as those hook contracts require.
+- Bundle a Claude Code plugin marketplace with hooks and a `/thanks` command.
+- Scope hook logs, reports, and announcements by the session or thread
+  identifier every supported hook contract carries, or by the transcript path
+  when a payload lacks one; a payload with neither is not recorded and never
+  announced. File names are a sanitized prefix plus a hash of the whole scope,
+  so distinct sessions never share a file. Commands are stored and compared
+  with outer whitespace removed.
+- Document pip and release-wheel installation for environments without `pipx`.
+
 ## 0.4.2 - 2026-09-02
 
 - Restore repository detection for editable VCS requirements such as
