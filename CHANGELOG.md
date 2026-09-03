@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.5.0 - 2026-09-03
+
 - Count a session command as verified use only when its own successful
   completion is recorded: the recorded result must carry an exact success
   signal and no failure signal, the tool call must be a single logical line,
