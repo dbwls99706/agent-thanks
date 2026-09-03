@@ -261,12 +261,14 @@ ways, and neither interrupts the agent or changes a Star:
    user message, or an exit code of 0 in the JSON or header envelope Codex
    writes for its own `shell` or `exec_command` tool; Gemini records no
    success signal) after the call and with no failure signal anywhere in the
-   envelope, the envelope is small enough to scan completely, every item's own
-   role agrees with the message and record around it, every transcript scanned
-   together agrees about the call, the call id is used
+   envelope, the envelope is small enough to scan completely and every JSON
+   object in it names each key once, every item's own role agrees with the
+   message and record around it, every transcript of the same recorded session
+   and project scanned together agrees about the call, the call id is used
    for that call alone, the transcript has no unparsable line, the call names
    the agent's own shell tool (`Bash` for Claude Code, `shell` or
-   `exec_command` for Codex), the
+   `exec_command` for Codex), a corrupted transcript vouches for no success in
+   another file, the
    call is a single logical line, and the statement is a single command or an
    `&&` chain whose other segments are trivially safe (`cd`, `mkdir`, `echo`,
    and similar). Program output and bare text can never supply a success
@@ -366,7 +368,7 @@ shows verified use for the first time, shows a one-line notice such as:
 
 ```text
 agent-thanks: this task shows verified open-source use of BehaviorTree/BehaviorTree.CPP.
-Review the evidence and approve Stars in a terminal: agent-thanks star .agent-thanks/report.json
+Review the evidence and approve Stars in a terminal: agent-thanks star .agent-thanks/reports/<session>-<hash>.json
 ```
 
 `/thanks` shows the current report inside the session. Approval still happens
@@ -419,7 +421,9 @@ writes ahead of the program output (`Process exited with code 0`). Anything
 else is recorded as `error` or `unknown` and never promoted. The transcript
 adapter reads Codex `function_call` and `custom_tool_call` records for
 `shell` and `exec_command` the same way; a call whose recorded result is still
-running, missing, or unjudgeable stays a reference. A code-mode `exec` call
+running, missing, or unjudgeable stays a reference. Codex transcript support is
+best effort until a real rollout has been tested against it; the hook path is
+the supported one. A code-mode `exec` call
 records a program rather than a shell command, so its text yields references
 only; Codex applies hooks to the tool calls that program makes, which is why
 the hook log, not the transcript, covers Work Mode sessions.
@@ -454,7 +458,10 @@ Gemini CLI currently yields review-only references. Its shell tool records a
 failure explicitly (an `Exit Code` line and `isError`) but marks success only
 by the absence of those signals, and absence is never accepted as success.
 Repositories it cloned still appear in the report for review; verified use
-needs a recorded success that Gemini does not write yet.
+needs a recorded success that Gemini does not write yet. Gemini's `AfterAgent`
+hook has not fired reliably in every version, so when a turn ends without a
+report, run `agent-thanks scan --from gemini` by hand; it reads the same
+transcript under `~/.gemini/tmp`.
 
 Automation stops at detection by design. No hook, plugin, or transcript flag
 authenticates to GitHub or changes a Star.

@@ -9,6 +9,9 @@ from .models import Evidence, Report, UnresolvedDependency, merge_candidates
 from .resolver import PackageRepositoryResolver
 from .session import OUTCOME_ATTESTED, OUTCOME_MISSING, scan_session_evidence
 from .transcripts import (
+    HookStatus,
+    TranscriptCall,
+    hook_log_identity,
     is_hook_log,
     is_transcript,
     load_hook_log_statuses,
@@ -17,6 +20,8 @@ from .transcripts import (
     scan_hook_log_evidence,
     scan_transcript_evidence,
     transcript_calls,
+    transcript_identity,
+    _normalize_path,
 )
 
 
@@ -117,18 +122,47 @@ class ProjectScanner:
             for name, path in sources
             if str(name) != "-" and (name, path) not in hook_logs and is_transcript(path)
         ]
-        overrides = (
-            merge_hook_statuses(load_hook_log_statuses(path) for _, path in hook_logs) if hook_logs else None
-        )
-        calls = (
-            merge_transcript_calls(transcript_calls(path) for _, path in transcripts) if transcripts else None
-        )
+        # Sources are linked only inside a confirmed identity: a transcript's recorded
+        # session id and project directory, or a hook log's session id together with
+        # the project it was written under. Files without an identity are judged alone.
+        root_key = _normalize_path(str(self.root))
+        log_identity = {
+            path: (identity, root_key)
+            for _, path in hook_logs
+            if (identity := hook_log_identity(path)) is not None
+        }
+        transcript_identity_of = {
+            path: identity for _, path in transcripts if (identity := transcript_identity(path)) is not None
+        }
+        overrides_by_identity: dict[tuple[str, str], dict[str, HookStatus]] = {}
+        for path, identity in log_identity.items():
+            overrides_by_identity.setdefault(identity, {})
+        for identity in overrides_by_identity:
+            overrides_by_identity[identity] = merge_hook_statuses(
+                load_hook_log_statuses(path) for path, key in log_identity.items() if key == identity
+            )
+        calls_by_identity: dict[tuple[str, str], dict[str, TranscriptCall]] = {}
+        for identity in set(transcript_identity_of.values()):
+            calls_by_identity[identity] = merge_transcript_calls(
+                transcript_calls(path) for path, key in transcript_identity_of.items() if key == identity
+            )
         for name, path in sources:
             if (name, path) in hook_logs:
-                evidence_items.extend(scan_hook_log_evidence(path, str(name), transcript_calls=calls))
-            elif (name, path) in transcripts:
+                identity = log_identity.get(path)
                 evidence_items.extend(
-                    scan_transcript_evidence(path, str(name), authoritative=overrides, session_calls=calls)
+                    scan_hook_log_evidence(
+                        path, str(name), transcript_calls=calls_by_identity.get(identity) if identity else None
+                    )
+                )
+            elif (name, path) in transcripts:
+                identity = transcript_identity_of.get(path)
+                evidence_items.extend(
+                    scan_transcript_evidence(
+                        path,
+                        str(name),
+                        authoritative=overrides_by_identity.get(identity) if identity else None,
+                        session_calls=calls_by_identity.get(identity) if identity else None,
+                    )
                 )
             else:
                 text = self._read_session(name)

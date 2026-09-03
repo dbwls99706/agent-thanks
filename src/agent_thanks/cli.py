@@ -26,6 +26,7 @@ from .transcripts import (
     is_shell_tool,
     HOOK_LOG_SCHEMA,
     canonical_command,
+    load_json,
     HOOK_PROMOTION_MATRIX,
     locate_transcript,
     result_status,
@@ -540,7 +541,7 @@ def _hook_payload(raw: str | None) -> dict[str, object]:
         raw = sys.stdin.read()
     if not raw.strip():
         return {}
-    payload = json.loads(raw)
+    payload = load_json(raw)  # a duplicated key is a malformed payload, never a quiet override
     return payload if isinstance(payload, dict) else {}
 
 
@@ -553,8 +554,9 @@ def _hook_root(payload: dict[str, object]) -> Path:
 def _state_directory(root: Path) -> Path:
     state = _private_directory(root / STATE_DIRECTORY)
     ignore = state / ".gitignore"
-    if not ignore.exists():
+    if not ignore.exists() and not ignore.is_symlink():
         _private_write(ignore, "*\n")
+    _tighten_state(state)
     return state
 
 
@@ -575,24 +577,128 @@ def _private_directory(path: Path) -> Path:
     return path
 
 
-def _private_write(path: Path, text: str, *, append: bool = False) -> None:
-    """Write a state file readable by its owner only, refusing symlinks and special files."""
+def _open_private(path: Path, flags: int) -> int:
+    """Open a state file without following links and only if it is a regular file.
+
+    The parent directory is opened first (no follow, must be a directory) and
+    the file is opened relative to it. ``O_NONBLOCK`` keeps a FIFO left at the
+    path from blocking the hook; the descriptor is then verified with ``fstat``
+    and closed unless it is a regular file.
+    """
     if path.is_symlink():
-        raise RuntimeError(f"Refusing to write {path}: it is a symbolic link")
-    flags = os.O_WRONLY | os.O_CREAT | (os.O_APPEND if append else os.O_TRUNC)
-    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-    descriptor = os.open(path, flags, 0o600)
+        raise RuntimeError(f"Refusing to open {path}: it is a symbolic link")
+    try:
+        existing = os.lstat(path)
+    except FileNotFoundError:
+        existing = None
+    if existing is not None and not stat.S_ISREG(existing.st_mode):
+        raise RuntimeError(f"Refusing to open {path}: not a regular file")
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    parent_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | no_follow | getattr(os, "O_CLOEXEC", 0)
+    parent = os.open(path.parent, parent_flags)
+    try:
+        if not stat.S_ISDIR(os.fstat(parent).st_mode):
+            raise RuntimeError(f"Refusing to open {path}: parent is not a directory")
+        file_flags = flags | no_follow | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+        if os.open in os.supports_dir_fd:
+            descriptor = os.open(path.name, file_flags, 0o600, dir_fd=parent)
+        else:  # pragma: no cover - platforms without dir_fd
+            descriptor = os.open(path, file_flags, 0o600)
+    finally:
+        os.close(parent)
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise RuntimeError(f"Refusing to write {path}: not a regular file")
+            raise RuntimeError(f"Refusing to use {path}: not a regular file")
         if os.name != "nt":
             os.fchmod(descriptor, 0o600)
+    except Exception:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _private_write(path: Path, text: str, *, append: bool = False) -> None:
+    """Write a state file readable by its owner only, refusing symlinks and special files.
+
+    Appends open the existing regular file directly; whole-file writes go to a
+    private temporary file in the same directory that then replaces the target,
+    so a target is never truncated before it is known to be acceptable.
+    """
+    if append:
+        descriptor = _open_private(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            descriptor = -1
             handle.write(text)
-    finally:
-        if descriptor != -1:
-            os.close(descriptor)
+        return
+    if path.is_symlink():
+        raise RuntimeError(f"Refusing to write {path}: it is a symbolic link")
+    try:
+        existing = os.lstat(path)
+    except FileNotFoundError:
+        existing = None
+    if existing is not None and not stat.S_ISREG(existing.st_mode):
+        raise RuntimeError(f"Refusing to write {path}: not a regular file")
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    descriptor = _open_private(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def _private_read(path: Path) -> str | None:
+    """Read a state file without following links; None when it does not exist."""
+    if path.is_symlink():
+        raise RuntimeError(f"Refusing to read {path}: it is a symbolic link")
+    if not path.exists():
+        return None
+    descriptor = _open_private(path, os.O_RDONLY)
+    with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+        return handle.read()
+
+
+def _tighten_state(state: Path) -> None:
+    """Tighten every known state file and directory to owner-only access on POSIX."""
+    if os.name == "nt":
+        return
+    for name in ("sessions", "reports"):
+        directory = state / name
+        try:
+            if stat.S_ISDIR(os.lstat(directory).st_mode):
+                os.chmod(directory, 0o700)
+        except OSError:
+            continue
+    known = (
+        (state, (".gitignore", "report.json", "announced.json")),
+        (state / "sessions", (".jsonl",)),
+        (state / "reports", (".json",)),
+    )
+    for directory, suffixes in known:
+        try:
+            if not stat.S_ISDIR(os.lstat(directory).st_mode):
+                continue
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if not entry.is_file(follow_symlinks=False) or not entry.name.endswith(suffixes):
+                        continue
+                    try:
+                        descriptor = os.open(entry.path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+                    except OSError:
+                        continue
+                    try:
+                        if stat.S_ISREG(os.fstat(descriptor).st_mode):
+                            os.fchmod(descriptor, 0o600)
+                    except OSError:
+                        pass
+                    finally:
+                        os.close(descriptor)
+        except OSError:
+            continue
 
 
 def _is_private_regular_file(path: Path) -> bool:
@@ -774,9 +880,13 @@ def _hook_stop(
 
 
 def _load_announced(path: Path) -> dict[str, list[str]]:
-    if not path.is_file():
+    text = _private_read(path)
+    if text is None:
         return {}
-    loaded = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        loaded = load_json(text)
+    except ValueError:
+        return {}
     if isinstance(loaded, list):
         return {"legacy": [str(item) for item in loaded]}
     if isinstance(loaded, dict):

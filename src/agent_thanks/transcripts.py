@@ -119,6 +119,29 @@ HOOK_PROMOTION_MATRIX = frozenset(
 RESULT_OK = "ok"
 RESULT_ERROR = "error"
 RESULT_UNKNOWN = "unknown"
+
+
+class DuplicateKeyError(ValueError):
+    """A JSON object repeated a key; ``json.loads`` would silently keep the last value."""
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    mapping: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in mapping:
+            raise DuplicateKeyError(f"duplicate key {key!r}")
+        mapping[key] = value
+    return mapping
+
+
+def load_json(text: str) -> Any:
+    """Parse JSON, rejecting objects that repeat a key.
+
+    Every transcript record, hook log entry, hook payload, and JSON-encoded
+    result string goes through this loader, so a duplicated ``is_error`` or
+    ``exit_code`` can never resolve to whichever value came last.
+    """
+    return json.loads(text, object_pairs_hook=_reject_duplicate_keys)
 _FAILURE_STATUSES = {
     "failed",
     "failure",
@@ -178,8 +201,8 @@ def load_transcript(path: Path) -> Transcript:
     text = path.read_text(encoding="utf-8", errors="replace")
     stripped = text.lstrip("\ufeff \t\r\n")
     try:
-        document = json.loads(stripped)
-    except json.JSONDecodeError:
+        document = load_json(stripped)
+    except ValueError:
         document = None
 
     if document is None:
@@ -190,8 +213,8 @@ def load_transcript(path: Path) -> Transcript:
             if not line:
                 continue
             try:
-                records.append((number, json.loads(line)))
-            except json.JSONDecodeError:
+                records.append((number, load_json(line)))
+            except ValueError:
                 corrupted = True
         return Transcript(records, corrupted)
     if isinstance(document, list):
@@ -309,6 +332,12 @@ def transcript_calls(path: Path) -> dict[str, TranscriptCall]:
     transcript = load_transcript(path)
     calls, positions = _index_calls(transcript.records)
     results = _index_results(transcript.records, calls, positions)
+    if transcript.corrupted:
+        # A corrupted file keeps its failures but can vouch for no success elsewhere.
+        results = {
+            call_id: RESULT_ERROR if status == RESULT_ERROR else RESULT_UNKNOWN
+            for call_id, status in results.items()
+        }
     known = {
         call_id: TranscriptCall(
             info.command if info is not None else None,
@@ -321,6 +350,28 @@ def transcript_calls(path: Path) -> dict[str, TranscriptCall]:
     for call_id, status in results.items():
         known.setdefault(call_id, TranscriptCall(None, status, False, True))
     return known
+
+
+def transcript_identity(path: Path) -> tuple[str, str] | None:
+    """Return (session id, normalized project directory) when a transcript records both.
+
+    Only transcripts with a confirmed identity may be merged with each other or
+    linked to a hook log; anything else is judged on its own.
+    """
+    metadata = transcript_metadata(path)
+    if metadata.session_id is None or metadata.cwd is None:
+        return None
+    return metadata.session_id, _normalize_path(metadata.cwd)
+
+
+def hook_log_identity(path: Path) -> str | None:
+    """Return the session id a hook log records, or None when its entries carry none or disagree."""
+    identities = {
+        entry.get("session_id")
+        for _, entry in _hook_log_entries(path).entries
+        if isinstance(entry.get("session_id"), str) and entry.get("session_id")
+    }
+    return next(iter(identities)) if len(identities) == 1 else None
 
 
 def merge_transcript_calls(maps: Iterable[Mapping[str, TranscriptCall]]) -> dict[str, TranscriptCall]:
@@ -368,8 +419,8 @@ def is_hook_log(path: Path) -> bool:
                 if not line:
                     continue
                 try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
+                    record = load_json(line)
+                except ValueError:
                     return False
                 return isinstance(record, dict) and record.get("schema") == HOOK_LOG_SCHEMA
     except OSError:
@@ -525,8 +576,8 @@ def _hook_log_entries(path: Path) -> HookLog:
         if not line:
             continue
         try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
+            entry = load_json(line)
+        except ValueError:
             corrupted = True
             continue
         if isinstance(entry, dict) and entry.get("schema") == HOOK_LOG_SCHEMA:
@@ -671,8 +722,8 @@ def _head_records(path: Path, *, limit: int) -> list[Any]:
         return []
     stripped = head.lstrip("\ufeff \t\r\n")
     try:
-        document = json.loads(stripped)
-    except json.JSONDecodeError:
+        document = load_json(stripped)
+    except ValueError:
         document = None
     if isinstance(document, dict):
         return [document]
@@ -684,8 +735,8 @@ def _head_records(path: Path, *, limit: int) -> list[Any]:
         if not line:
             continue
         try:
-            records.append(json.loads(line))
-        except json.JSONDecodeError:
+            records.append(load_json(line))
+        except ValueError:
             continue
         if len(records) >= limit:
             break
@@ -914,7 +965,19 @@ def result_status(value: Any, *, agent: str | None = None) -> str:
     too deep or too large to scan completely is RESULT_UNKNOWN; without a
     failure, an exact success makes it RESULT_OK; otherwise RESULT_UNKNOWN.
     """
-    failures, complete = _failure_signals(value, 0)
+    return result_status_in(value, value, agent=agent)
+
+
+def result_status_in(record: Any, value: Any, *, agent: str | None = None) -> str:
+    """Judge ``value`` as the success position while scanning all of ``record`` for failures.
+
+    ``record`` is the whole result envelope (a Codex output item with its
+    ``output``, ``metadata``, and sibling fields; a Gemini ``functionResponse``
+    with its ``response``); ``value`` is the one position the agent writes its
+    success into. A failure or an incomplete scan anywhere in the record blocks
+    a success read from the position.
+    """
+    failures, complete = _failure_signals(record, 0)
     if failures:
         return RESULT_ERROR
     if not complete:
@@ -985,30 +1048,40 @@ def _failure_signals(value: Any, depth: int) -> tuple[int, bool]:
         return total, complete
     if isinstance(value, str):
         stripped = value.strip()
-        parsed = _parse_json_object(stripped)
+        parsed = _parse_json_value(stripped)
         if parsed is not None:
             return _failure_signals(parsed, depth + 1)
         total = sum(1 for match in _EXIT_CODE_PATTERN.finditer(value) if int(match.group(1)) != 0)
-        complete = True
+        # A string that looks like JSON but does not parse (a duplicate key, a
+        # truncation) hides whatever it carried: the scan is incomplete.
+        complete = not stripped.startswith(("{", "["))
         # Program output after a header may itself be JSON with an error inside.
         for line in stripped.splitlines():
-            line_object = _parse_json_object(line.strip())
-            if line_object is not None:
-                nested_total, nested_complete = _failure_signals(line_object, depth + 1)
+            line_value = _parse_json_value(line.strip())
+            if line_value is not None:
+                nested_total, nested_complete = _failure_signals(line_value, depth + 1)
                 total += nested_total
                 complete = complete and nested_complete
+            elif line.strip().startswith(("{", "[")):
+                complete = False
         return total, complete
     return 0, True
 
 
 def _parse_json_object(text: str) -> dict[str, Any] | None:
-    if not text.startswith("{"):
+    value = _parse_json_value(text)
+    return value if isinstance(value, dict) else None
+
+
+def _parse_json_value(text: str) -> dict[str, Any] | list[Any] | None:
+    """Parse a JSON object or array; anything else, including duplicate keys, is None."""
+    if not text.startswith(("{", "[")):
         return None
     try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
+        parsed = load_json(text)
+    except ValueError:
         return None
-    return parsed if isinstance(parsed, dict) else None
+    return parsed if isinstance(parsed, (dict, list)) else None
 
 
 def _split_text_envelope(text: str) -> tuple[str, str]:
@@ -1061,12 +1134,12 @@ def _result_of(envelope: Envelope, calls: Mapping[str, CallInfo | None]) -> tupl
             and _call_kind_is(info, _CODEX_CALL_TYPES)
             and info.tool in CODEX_SHELL_TOOLS
         )
-        return call_id, result_status(node.get("output"), agent="codex" if placed else None)
+        return call_id, result_status_in(node, node.get("output"), agent="codex" if placed else None)
     response = node.get("functionResponse")
     if isinstance(response, dict) and isinstance(response.get("id"), str):
         call_id = response["id"]
         placed = _result_position_ok(envelope, "functionResponse") and _call_kind_is(calls.get(call_id), {"functionCall"})
-        return call_id, result_status(response.get("response"), agent="gemini" if placed else None)
+        return call_id, result_status_in(node, response.get("response"), agent="gemini" if placed else None)
     return None
 
 
@@ -1239,8 +1312,8 @@ def _command_of(parameters: Any) -> str | None:
         if not stripped.startswith(("{", "[")):
             return stripped or None
         try:
-            parameters = json.loads(stripped)
-        except json.JSONDecodeError:
+            parameters = load_json(stripped)
+        except ValueError:
             return None
     if not isinstance(parameters, dict):
         return None

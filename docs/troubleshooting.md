@@ -116,6 +116,18 @@ repository, as in `Adapted from https://github.com/owner/repository`; a phrase
 buried inside a longer sentence stays a review-only reference. Do not edit
 transcripts merely to force a high-confidence classification.
 
+## Gemini CLI produced no report
+
+Gemini CLI's `AfterAgent` hook has not fired reliably in every version. When a
+turn ends without a report, run the lookup by hand:
+
+```bash
+agent-thanks scan --from gemini
+```
+
+It reads the newest transcript under `~/.gemini/tmp` whose recorded project
+directory equals the current one. Gemini results stay review-only either way.
+
 ## The agent hook announced nothing
 
 `agent-thanks hook stop` prints a notice only when a repository shows verified

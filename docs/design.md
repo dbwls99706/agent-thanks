@@ -151,10 +151,20 @@ anything but exactly `false`, every exit code field that is non-zero or not an
 integer, every non-empty `error`, every failure `status` or status of an
 unexpected type, and every non-zero "Exit code" text, nested JSON strings and
 JSON lines inside program output included, so one contradictory or malformed
-field anywhere blocks the success; and an envelope too deep to scan completely
-is unjudgeable rather than clean. Several transcripts scanned together are
-merged per call id first: a failure or a different command recorded for the
-same call in another file of the session demotes the call in every file. A call id that the transcript
+field anywhere blocks the success; and an envelope too deep to scan completely,
+or a JSON string inside it that does not parse, is unjudgeable rather than
+clean. Every JSON record, hook log entry, hook payload, and JSON-encoded result
+string is parsed by a loader that rejects duplicate keys, so a repeated
+`is_error` or `exit_code` can never resolve to the value that came last: the
+record is corrupted or the result unjudgeable. Failure signals are read from
+the whole result record, siblings of the output included, while success is
+read from the one output position. Several transcripts scanned together are
+merged per call id first, but only inside a confirmed identity: the same
+recorded session id and project directory, or a hook log's session id under
+the project it was written for. A failure or a different command recorded for
+the same call in another file of that session demotes the call in every file;
+a corrupted file contributes its failures but never a success; and files
+without an identity, or with different identities, are judged alone. A call id that the transcript
 reuses for different calls attributes no result to any of them, and a
 transcript with an unparsable line is corrupted: its commands stay references
 whatever its results say, while a hook log scanned with it stands on its own
@@ -230,12 +240,16 @@ from another session's. Scopes become file names through a sanitized prefix
 plus a hash of the whole scope, so no two scopes share a file.
 
 On POSIX systems the state directory and every file in it are created readable
-by their owner only and tightened on each run, because the hook log keeps the
-raw text of every shell command, secrets included, for 30 days; Windows keeps
-its own access control. No state path may be a symbolic link: directories are
-checked with `lstat`, files are opened with `O_NOFOLLOW` and verified as regular
-files before they are written, and pruning deletes only regular files found
-directly inside the real state directories.
+by their owner only, and every known state file and directory is tightened on
+each run, because the hook log keeps the raw text of every shell command,
+secrets included, for 30 days; Windows keeps its own access control. No state
+path may be a symbolic link or a special file: directories are checked with
+`lstat`, files are opened relative to their parent directory with `O_NOFOLLOW`
+and `O_NONBLOCK` and verified as regular files before they are read or written,
+whole-file writes go to a private temporary file that then replaces the target,
+and pruning deletes only regular files found directly inside the real state
+directories. A path that fails these checks is refused with a note on standard
+error; the hook still exits successfully and announces nothing.
 
 Transcript lookups for `--from` return a file only when the project directory
 it records equals the current directory after normalization, and, when the

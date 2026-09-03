@@ -28,7 +28,8 @@ def run(argv: list[str]) -> tuple[int, str]:
     return status, stdout.getvalue()
 
 
-def write_transcript(path: Path, command: str, *, is_error: bool = False, cwd: str | None = None) -> None:
+def write_transcript(path: Path, command: str, *, is_error: bool = False, cwd: str | None = None,
+                     session_id: str | None = None) -> None:
     records: list[dict] = [
         {"type": "user", "message": {"role": "user", "content": "please"}},
         {
@@ -46,9 +47,11 @@ def write_transcript(path: Path, command: str, *, is_error: bool = False, cwd: s
             },
         },
     ]
-    if cwd is not None:
-        for record in records:
+    for record in records:
+        if cwd is not None:
             record["cwd"] = cwd  # Claude Code records the project directory on every line
+        if session_id is not None:
+            record["sessionId"] = session_id
     path.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
 
 
@@ -89,10 +92,10 @@ class HookRecordTests(IsolatedEnvironmentTestCase):
         with tempfile.TemporaryDirectory() as directory:
             transcript = Path(directory) / "t.jsonl"
             records = [
-                {"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "assistant", "cwd": directory, "sessionId": "s", "message": {"role": "assistant", "content": [
                     {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "git clone https://github.com/hooked/repo"}},
                     {"type": "text", "text": "Adapted from https://github.com/prose/claim"}]}},
-                {"type": "user", "message": {"role": "user", "content": [
+                {"type": "user", "cwd": directory, "sessionId": "s", "message": {"role": "user", "content": [
                     {"type": "tool_result", "tool_use_id": "t1", "content": "no is_error field here"}]}},
             ]
             transcript.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
@@ -115,6 +118,7 @@ class HookRecordTests(IsolatedEnvironmentTestCase):
         with tempfile.TemporaryDirectory() as directory:
             transcript = Path(directory) / "t.jsonl"
             records = [
+                {"type": "session_meta", "payload": {"id": "s", "cwd": directory}},
                 {"type": "response_item", "payload": {"type": "function_call", "name": "shell", "call_id": "c1",
                  "arguments": json.dumps({"command": "git clone https://github.com/conflict/repo"})}},
                 {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "c1",
@@ -152,6 +156,7 @@ class HookRecordTests(IsolatedEnvironmentTestCase):
         with tempfile.TemporaryDirectory() as directory:
             transcript = Path(directory) / "t.jsonl"
             records = [
+                {"type": "session_meta", "payload": {"id": "s", "cwd": directory}},
                 {"type": "response_item", "payload": {"type": "function_call", "name": "shell", "call_id": "same",
                  "arguments": json.dumps({"command": "git clone https://github.com/mismatch/command"})}},
                 {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "same",
@@ -333,8 +338,8 @@ class PromotionGateTests(IsolatedEnvironmentTestCase):
         calls = [] if drop_call else [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": transcript_command or command}}]
         calls.extend(extra_calls or [])
         lines = [
-            {"type": "assistant", "message": {"role": "assistant", "content": calls}},
-            {"type": "user", "message": {"role": "user", "content": [
+            {"type": "assistant", "cwd": directory, "sessionId": "g", "message": {"role": "assistant", "content": calls}},
+            {"type": "user", "cwd": directory, "sessionId": "g", "message": {"role": "user", "content": [
                 transcript_result or {"type": "tool_result", "tool_use_id": "t1", "content": "no result signal recorded"}]}},
         ]
         transcript.write_text("".join(json.dumps(r) + "\n" for r in lines), encoding="utf-8")
@@ -479,7 +484,7 @@ class HookContractTests(IsolatedEnvironmentTestCase):
         with tempfile.TemporaryDirectory() as directory:
             command = "git clone https://github.com/reverse/conflict"
             transcript = Path(directory) / "t.jsonl"
-            write_transcript(transcript, command, is_error=True)
+            write_transcript(transcript, command, is_error=True, cwd=directory, session_id="s")
             record = {"cwd": directory, "session_id": "s", "hook_event_name": "PostToolUse", "tool_use_id": "t1",
                       "tool_name": "Bash", "tool_input": {"command": command}}
             self.assertEqual(run(["hook", "record", "--from", "claude-code", json.dumps(record)]), (0, ""))
@@ -563,7 +568,7 @@ class HookContractTests(IsolatedEnvironmentTestCase):
         with tempfile.TemporaryDirectory() as directory:
             command = "git clone https://github.com/partial/failure"
             transcript = Path(directory) / "t.jsonl"
-            transcript.write_text(json.dumps({"type": "user", "message": {"role": "user", "content": [
+            transcript.write_text(json.dumps({"type": "user", "cwd": directory, "sessionId": "s", "message": {"role": "user", "content": [
                 {"type": "tool_result", "tool_use_id": "t1", "is_error": True, "content": "fatal"}]}}) + "\n", encoding="utf-8")
             record = {"cwd": directory, "session_id": "s", "hook_event_name": "PostToolUse", "tool_use_id": "t1",
                       "tool_name": "Bash", "tool_input": {"command": command}}
@@ -644,16 +649,17 @@ class HookContractTests(IsolatedEnvironmentTestCase):
     def test_transcripts_of_one_session_scanned_together_merge_failure_first(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             command = "git clone https://github.com/session/parts"
+            meta = {"type": "session_meta", "payload": {"id": "s", "cwd": directory}}
             call = {"type": "response_item", "payload": {"type": "function_call", "name": "shell", "call_id": "c1",
                                                          "arguments": json.dumps({"command": command})}}
             part_a = Path(directory) / "part-a.jsonl"
             part_b = Path(directory) / "part-b.jsonl"
             part_a.write_text("".join(json.dumps(r) + "\n" for r in [
-                call, {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "c1",
-                                                            "output": json.dumps({"output": "", "metadata": {"exit_code": 0}})}}]), encoding="utf-8")
+                meta, call, {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "c1",
+                                                                  "output": json.dumps({"output": "", "metadata": {"exit_code": 0}})}}]), encoding="utf-8")
             part_b.write_text("".join(json.dumps(r) + "\n" for r in [
-                call, {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "c1",
-                                                            "output": json.dumps({"output": "fatal", "metadata": {"exit_code": 128}})}}]), encoding="utf-8")
+                meta, call, {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "c1",
+                                                                  "output": json.dumps({"output": "fatal", "metadata": {"exit_code": 128}})}}]), encoding="utf-8")
             status, output = run(["scan", "--repo", directory, "--offline", "--session", str(part_a), "--session", str(part_b), "--output", "-"])
             self.assertEqual(status, 0)
             candidate = next(c for c in json.loads(output)["candidates"] if c["repository"] == "session/parts")
@@ -668,6 +674,220 @@ class HookContractTests(IsolatedEnvironmentTestCase):
             status, output = run(["scan", "--repo", directory, "--offline", "--session", str(log), "--session", str(part_a), "--session", str(part_b), "--output", "-"])
             candidate = next(c for c in json.loads(output)["candidates"] if c["repository"] == "session/parts")
             self.assertFalse(candidate["recommended"])
+
+
+class SessionIdentityTests(IsolatedEnvironmentTestCase):
+    def codex_file(self, directory: str, name: str, session: str | None, call_id: str, repository: str,
+                   exit_code: int | None, *, cwd: str | None = None, tail: str | None = None) -> Path:
+        records = []
+        if session is not None:
+            records.append({"type": "session_meta", "payload": {"id": session, "cwd": cwd or directory}})
+        records.append({"type": "response_item", "payload": {"type": "function_call", "name": "shell", "call_id": call_id,
+                                                              "arguments": json.dumps({"command": f"git clone https://github.com/{repository}"})}})
+        if exit_code is not None:
+            records.append({"type": "response_item", "payload": {"type": "function_call_output", "call_id": call_id,
+                                                                  "output": json.dumps({"output": "", "metadata": {"exit_code": exit_code}})}})
+        path = Path(directory) / name
+        text = "".join(json.dumps(r) + "\n" for r in records)
+        if tail is not None:
+            text += tail + "\n"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def scan(self, directory: str, *paths: Path) -> dict[str, tuple[bool, set[str]]]:
+        argv = ["scan", "--repo", directory, "--offline", "--output", "-"]
+        for path in paths:
+            argv += ["--session", str(path)]
+        status, output = run(argv)
+        self.assertEqual(status, 0)
+        return {c["repository"]: (c["recommended"], {e["confidence"] for e in c["evidence"]})
+                for c in json.loads(output)["candidates"]}
+
+    def test_calls_merge_only_inside_a_confirmed_session(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            a = self.codex_file(directory, "a.jsonl", "session-A", "c1", "identity/repo-a", 0)
+            b = self.codex_file(directory, "b.jsonl", "session-B", "c1", "identity/repo-b", 0)
+            result = self.scan(directory, a, b)
+            self.assertEqual(result["identity/repo-a"], (True, {"high"}))
+            self.assertEqual(result["identity/repo-b"], (True, {"high"}))
+            # The same recorded session split across files merges failure first.
+            ok = self.codex_file(directory, "ok.jsonl", "session-C", "c1", "identity/split", 0)
+            failed = self.codex_file(directory, "failed.jsonl", "session-C", "c1", "identity/split", 128)
+            self.assertEqual(self.scan(directory, ok, failed)["identity/split"], (False, {"low"}))
+            # Different recorded projects are different identities even with the same session id.
+            here = self.codex_file(directory, "here.jsonl", "session-D", "c1", "identity/here", 0)
+            there = self.codex_file(directory, "there.jsonl", "session-D", "c1", "identity/there", 128, cwd="/elsewhere")
+            result = self.scan(directory, here, there)
+            self.assertEqual(result["identity/here"], (True, {"high"}))
+            self.assertEqual(result["identity/there"], (False, {"low"}))
+
+    def test_files_without_an_identity_never_touch_each_other(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ok = self.codex_file(directory, "ok.jsonl", None, "c1", "anonymous/ok", 0)
+            failed = self.codex_file(directory, "failed.jsonl", None, "c1", "anonymous/failed", 128)
+            result = self.scan(directory, ok, failed)
+            self.assertEqual(result["anonymous/ok"], (True, {"high"}))
+            self.assertEqual(result["anonymous/failed"], (False, {"low"}))
+            # A hook log links only to a transcript that records the same session and project.
+            record = {"cwd": directory, "session_id": "s", "hook_event_name": "PostToolUse", "tool_use_id": "c1",
+                      "tool_name": "Bash", "tool_input": {"command": "git clone https://github.com/anonymous/ok"},
+                      "tool_response": json.dumps({"output": "", "metadata": {"exit_code": 128}})}
+            self.assertEqual(run(["hook", "record", "--from", "codex", json.dumps(record)])[0], 0)
+            log = Path(directory) / ".agent-thanks" / "sessions" / f"{session_file_stem('id:s')}.jsonl"
+            unlinked = self.scan(directory, log, ok)
+            self.assertEqual(unlinked["anonymous/ok"], (True, {"high", "low"}))  # the transcript stands alone; the hook entry is low
+            linked_file = self.codex_file(directory, "linked.jsonl", "s", "c1", "anonymous/ok", 0)
+            linked = self.scan(directory, log, linked_file)
+            self.assertEqual(linked["anonymous/ok"], (False, {"low"}))
+
+    def test_a_corrupted_file_never_promotes_another_file_of_the_session(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            call_only = self.codex_file(directory, "call-only.jsonl", "s", "c1", "corrupt/cross", None)
+            corrupted_ok = self.codex_file(directory, "corrupted.jsonl", "s", "c1", "corrupt/cross", 0,
+                                           tail='{"type": "response_item", "payload": {"type": "function_call_output", "call_id": "c1", "outp')
+            result = self.scan(directory, call_only, corrupted_ok)
+            self.assertEqual(result["corrupt/cross"], (False, {"low"}))
+            status, output = run(["hook", "stop", "--from", "codex", "--offline",
+                                  json.dumps({"cwd": directory, "session_id": "s", "transcript_path": str(corrupted_ok)})])
+            self.assertEqual((status, output), (0, "{}\n"))
+            # A corrupted file's parseable failure still demotes the clean file.
+            clean_ok = self.codex_file(directory, "clean-ok.jsonl", "s2", "c1", "corrupt/failure", 0)
+            corrupted_failed = self.codex_file(directory, "corrupted-failed.jsonl", "s2", "c1", "corrupt/failure", 128, tail='{"trunc')
+            result = self.scan(directory, clean_ok, corrupted_failed)
+            self.assertEqual(result["corrupt/failure"], (False, {"low"}))
+            self.assertTrue(all("failed" in e["detail"] or "could not be parsed" in e["detail"]
+                                for c in [json.loads(run(["scan", "--repo", directory, "--offline", "--output", "-",
+                                                          "--session", str(clean_ok), "--session", str(corrupted_failed)])[1])]
+                                for cand in c["candidates"] if cand["repository"] == "corrupt/failure" for e in cand["evidence"]))
+
+
+class WholeRecordAndDuplicateKeyTests(IsolatedEnvironmentTestCase):
+    def test_sibling_fields_of_a_codex_output_block_success(self) -> None:
+        envelope = json.dumps({"output": "Cloning...", "metadata": {"exit_code": 0}})
+        with tempfile.TemporaryDirectory() as directory:
+            records = [
+                {"type": "function_call", "name": "shell", "call_id": "m", "arguments": json.dumps({"command": "git clone https://github.com/sibling/metadata"})},
+                {"type": "function_call_output", "call_id": "m", "output": envelope, "metadata": {"exit_code": 128}},
+                {"type": "function_call", "name": "shell", "call_id": "e", "arguments": json.dumps({"command": "git clone https://github.com/sibling/error"})},
+                {"type": "function_call_output", "call_id": "e", "output": envelope, "error": "fatal"},
+                {"type": "custom_tool_call", "name": "exec_command", "call_id": "a", "input": "git clone https://github.com/sibling/array"},
+                {"type": "custom_tool_call_output", "call_id": "a", "output": "Exit code: 0\nOutput:\n[{\"error\":\"fatal\"}]"},
+                {"type": "function_call", "name": "shell", "call_id": "g", "arguments": json.dumps({"command": "git clone https://github.com/sibling/genuine"})},
+                {"type": "function_call_output", "call_id": "g", "output": envelope},
+            ]
+            path = Path(directory) / "t.jsonl"
+            path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+            status, output = run(["scan", "--repo", directory, "--offline", "--session", str(path), "--output", "-"])
+            by_repo = {c["repository"]: c for c in json.loads(output)["candidates"]}
+        for name in ("metadata", "error", "array"):
+            self.assertFalse(by_repo[f"sibling/{name}"]["recommended"], name)
+        self.assertTrue(by_repo["sibling/genuine"]["recommended"])
+        # The same envelopes through a Codex hook payload.
+        with tempfile.TemporaryDirectory() as directory:
+            for index, response in enumerate((
+                {"output": envelope, "metadata": {"exit_code": 128}},
+                {"output": envelope, "error": "fatal"},
+                "Exit code: 0\nOutput:\n[{\"error\":\"fatal\"}]",
+            )):
+                record = {"cwd": directory, "session_id": "h", "hook_event_name": "PostToolUse", "tool_use_id": f"c{index}",
+                          "tool_name": "Bash", "tool_input": {"command": f"git clone https://github.com/hooksibling/r{index}"},
+                          "tool_response": response}
+                self.assertEqual(run(["hook", "record", "--from", "codex", json.dumps(record)])[0], 0)
+            log = Path(directory) / ".agent-thanks" / "sessions" / f"{session_file_stem('id:h')}.jsonl"
+            entries = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual([e["status"] for e in entries], ["error", "error", "error"])
+
+    def test_duplicate_json_keys_never_resolve_to_a_success(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            claude = Path(directory) / "claude.jsonl"
+            claude.write_text(
+                json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "git clone https://github.com/dup/claude"}}]}}) + "\n"
+                + '{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "is_error": true, "is_error": false, "content": "x"}]}}\n',
+                encoding="utf-8")
+            codex = Path(directory) / "codex.jsonl"
+            codex.write_text(
+                json.dumps({"type": "function_call", "name": "shell", "call_id": "c1", "arguments": json.dumps({"command": "git clone https://github.com/dup/codex"})}) + "\n"
+                + json.dumps({"type": "function_call_output", "call_id": "c1", "output": '{"output": "", "metadata": {"exit_code": 128, "exit_code": 0}}'}) + "\n",
+                encoding="utf-8")
+            for path, repository in ((claude, "dup/claude"), (codex, "dup/codex")):
+                status, output = run(["scan", "--repo", directory, "--offline", "--session", str(path), "--output", "-"])
+                candidate = next(c for c in json.loads(output)["candidates"] if c["repository"] == repository)
+                self.assertFalse(candidate["recommended"], repository)
+            # A hook log entry and a hook payload with duplicated keys are refused as well.
+            sessions = Path(directory) / ".agent-thanks" / "sessions"
+            sessions.mkdir(parents=True)
+            entry = ('{"schema": "agent-thanks/hook-log/1", "agent": "claude-code", "event": "PostToolUse", "tool": "Bash", '
+                     '"session_id": "d", "tool_call_id": "c1", "command": "git clone https://github.com/dup/log", '
+                     '"status": "error", "status": "ok", "basis": "successful_post_tool_event"}')
+            (sessions / f"{session_file_stem('id:d')}.jsonl").write_text(entry + "\n", encoding="utf-8")
+            self.assertEqual(run(["hook", "stop", "--offline", json.dumps({"cwd": directory, "session_id": "d"})]), (0, ""))
+            payload = ('{"cwd": "%s", "session_id": "p", "hook_event_name": "PostToolUse", "tool_use_id": "t1", "tool_name": "Bash", '
+                       '"tool_input": {"command": "git clone https://github.com/dup/payload"}, "hook_event_name": "PreToolUse"}' % directory)
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                self.assertEqual(run(["hook", "record", "--from", "claude-code", payload]), (0, ""))
+            self.assertIn("duplicate key", stderr.getvalue())
+            self.assertFalse((sessions / f"{session_file_stem('id:p')}.jsonl").exists())
+
+
+class FailClosedStateTests(IsolatedEnvironmentTestCase):
+    @unittest.skipIf(os.name == "nt", "POSIX special files")
+    def test_a_fifo_at_the_log_path_is_refused_promptly(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sessions = Path(directory) / ".agent-thanks" / "sessions"
+            sessions.mkdir(parents=True)
+            os.mkfifo(sessions / f"{session_file_stem('id:f')}.jsonl")
+            record = {"cwd": directory, "session_id": "f", "hook_event_name": "PostToolUse", "tool_use_id": "t1",
+                      "tool_name": "Bash", "tool_input": {"command": "git clone https://github.com/fifo/repo"}}
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                self.assertEqual(run(["hook", "record", "--from", "claude-code", json.dumps(record)]), (0, ""))
+            self.assertIn("not a regular file", stderr.getvalue())
+
+    @unittest.skipIf(os.name == "nt", "POSIX symbolic links")
+    def test_a_symlinked_announcement_file_is_never_read(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            outside = Path(directory) / "outside.json"
+            outside.write_text(json.dumps({"id:s": ["symlink/repo"]}), encoding="utf-8")
+            state = Path(directory) / ".agent-thanks"
+            state.mkdir()
+            (state / "announced.json").symlink_to(outside)
+            transcript = Path(directory) / "t.jsonl"
+            write_transcript(transcript, "git clone https://github.com/symlink/repo", cwd=directory, session_id="s")
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                status, output = run(["hook", "stop", "--from", "claude-code", "--offline",
+                                      json.dumps({"cwd": directory, "session_id": "s", "transcript_path": str(transcript)})])
+            self.assertEqual((status, output), (0, ""))
+            self.assertIn("symbolic link", stderr.getvalue())
+            self.assertEqual(json.loads(outside.read_text(encoding="utf-8")), {"id:s": ["symlink/repo"]})
+
+    @unittest.skipIf(os.name == "nt", "POSIX permission bits")
+    def test_existing_state_files_are_tightened(self) -> None:
+        import stat as stat_module
+
+        previous = os.umask(0o022)
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                state = Path(directory) / ".agent-thanks"
+                (state / "sessions").mkdir(parents=True)
+                (state / "reports").mkdir()
+                loose = [state / ".gitignore", state / "report.json", state / "announced.json",
+                         state / "sessions" / "old-0123456789abcdef.jsonl", state / "reports" / "old-0123456789abcdef.json"]
+                for path in loose:
+                    path.write_text("{}\n" if path.suffix == ".json" else "*\n", encoding="utf-8")
+                    os.chmod(path, 0o644)
+                for folder in (state, state / "sessions", state / "reports"):
+                    os.chmod(folder, 0o755)
+                run(["hook", "stop", "--from", "claude-code", "--offline", json.dumps({"cwd": directory, "session_id": "t"})])
+                mode = lambda path: stat_module.S_IMODE(path.stat().st_mode)  # noqa: E731
+                for folder in (state, state / "sessions", state / "reports"):
+                    self.assertEqual(mode(folder), 0o700, folder)
+                for path in loose:
+                    self.assertEqual(mode(path), 0o600, path)
+        finally:
+            os.umask(previous)
 
 
 class CodexNotifyTests(IsolatedEnvironmentTestCase):

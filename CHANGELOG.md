@@ -29,11 +29,13 @@ All notable changes to this project will be documented in this file.
   at the positions the agent writes them, only for the agent's own shell tool
   (`Bash` for Claude Code), only after the call it names, only when every
   item's own role agrees with its record, only when the envelope can be
-  scanned completely and no contradictory or malformed field anywhere in it
-  blocks the success, and only when every transcript scanned together agrees
-  about the call, never from program output or bare text; a transcript with an
-  unparsable line promotes nothing; provenance prose counts only at an
-  assistant message position; several
+  scanned completely and no contradictory or malformed field anywhere in the
+  whole result record blocks the success, and only when every transcript of
+  the same recorded session and project scanned together agrees about the
+  call, never from program output or bare text; every JSON record and
+  JSON-encoded result is parsed rejecting duplicate keys; a transcript with an
+  unparsable line promotes nothing, in any file; provenance prose counts only
+  at an assistant message position; several
   results for one call combine failure first; a call id reused for different
   calls, or a call found outside a recognized tool call position, attributes
   no result; call-shaped objects inside user or tool content are never
@@ -56,9 +58,11 @@ All notable changes to this project will be documented in this file.
   never by file name alone, honoring `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, and
   to fail rather than guess.
 - Create the `.agent-thanks` state directory and its files readable by their
-  owner only on POSIX, tightening existing ones, because hook logs keep raw
-  shell commands; refuse symbolic links anywhere in the state directory and
-  prune only regular files inside it.
+  owner only on POSIX, tightening every known file on each run, because hook
+  logs keep raw shell commands; refuse symbolic links and special files
+  anywhere in the state directory for reads and writes alike, write whole
+  files through a private temporary file, and prune only regular files inside
+  it.
 - Add `agent-thanks hook record` and `agent-thanks hook stop`, detection-only
   entry points for agent hooks. `record` keeps a structured per-session log
   with each command's recorded status and basis, treating the Claude Code
