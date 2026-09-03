@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "agent-thanks",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Record the shell commands an agent runs and, after each completed turn, announce repositories with verified open-source use. Detection only: Stars always require the interactive agent-thanks star command.",
   "author": {
     "name": "dbwls99706"

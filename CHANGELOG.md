@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.5.1 - 2026-09-03
+
 - Treat a project directory the platform cannot resolve as identifying nothing.
   A transcript whose recorded directory holds an embedded null byte no longer
   ends the scan with an error, and it never merges with another file recording

@@ -12,7 +12,7 @@
       "name": "agent-thanks",
       "source": "./plugins/agent-thanks",
       "description": "Record the shell commands an agent runs and, after each completed turn, announce repositories with verified open-source use. Stars still require the interactive agent-thanks star command.",
-      "version": "0.5.0",
+      "version": "0.5.1",
       "category": "productivity",
       "keywords": ["open-source", "attribution", "github", "stars"]
     }
