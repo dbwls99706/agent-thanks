@@ -137,7 +137,12 @@ in the JSON-encoded envelope, or in the header block that precedes the
 header line a header field). A Gemini `functionResponse` counts only inside a
 user-role message paired with a `functionCall`, and Gemini defines no success
 signal. A result anywhere else, or paired with a call of another kind, keeps
-its failure signals but never yields a success. A call id that the transcript
+its failure signals but never yields a success; so does a success recorded
+before the call it names, a result in a record whose outer type and inner
+message role disagree, and a result object that carries any contradictory
+field, because every `is_error`, exit code, `error`, `status`, and `isError`
+at the top level and inside `metadata` or `data` is collected before a single
+success is accepted. A call id that the transcript
 reuses for different calls attributes no result to any of them, and a
 transcript with an unparsable line is corrupted: its commands stay references
 whatever its results say, while a hook log scanned with it stands on its own
@@ -174,15 +179,19 @@ leave the command a reference:
    `result_status`), inside a transcript without unparsable lines
    (`load_transcript`).
 2. A non-empty tool call id indexed at an envelope position with exactly this
-   call's fingerprint and for this call alone; a call found anywhere else, or
-   with another fingerprint, claims nothing (`_index_calls`,
+   call's fingerprint and for this call alone, under a role that is not on the
+   user side and does not contradict its record; a call found anywhere else,
+   or with another fingerprint, claims nothing, and a success result must
+   follow the call it names (`_index_calls`, `_index_results`,
    `_command_outcome`).
-3. The identical command text in the hook entry and the transcript call when
-   both exist, enforced on both sides (`_command_outcome`,
-   `scan_hook_log_evidence`, `combine_hook_entries`).
+3. The identical command text, compared after removing outer whitespace only,
+   in the hook entry and the transcript call when both exist, enforced on both
+   sides (`canonical_command`, `_command_outcome`, `scan_hook_log_evidence`,
+   `combine_hook_entries`).
 4. A single logical line (`scan_session_evidence` with `single_statement`).
-5. An allowed result envelope with an exact success signal
-   (`result_status`); provenance phrases never count inside a command
+5. An allowed result envelope with an exact success signal and no
+   contradictory field anywhere inside it (`result_status`,
+   `_structured_signals`); provenance phrases never count inside a command
    (`scan_session_evidence` with `provenance` off).
 6. A shell structure that lets the recorded result be attributed to the
    repository command: a single command or a pure `&&` chain of trivially safe
@@ -194,10 +203,12 @@ leave the command a reference:
    `combine_hook_entries`, `transcript_calls`, `scan_hook_log_evidence`,
    `_command_outcome`).
 
-Session ids become file names through a sanitized prefix plus a hash of the
-original id, always, so no two ids share a log or a report; a missing id uses
-the fixed stem `unscoped`, which no real id can produce, and announcements are
-keyed the same way.
+Every supported hook contract carries a session or thread identifier. It
+becomes the scope of the log, the report, and the announcements; a payload
+without one is scoped by its transcript path, and a payload with neither is
+not recorded and never announced, because its commands could not be kept apart
+from another session's. Scopes become file names through a sanitized prefix
+plus a hash of the whole scope, so no two scopes share a file.
 
 Transcript lookups for `--from` return a file only when the project directory
 it records equals the current directory after normalization, and, when the

@@ -24,8 +24,11 @@ All notable changes to this project will be documented in this file.
   results. Success is read only from the structured field each agent writes,
   in the position it writes it (a Claude Code `tool_result` inside a user
   message, a Codex output item paired with a Codex call record of its own
-  `shell` or `exec_command` tool; Gemini has none), never from program output
-  or bare text; a transcript with an unparsable line promotes nothing; several
+  `shell` or `exec_command` tool; Gemini has none), only after the call it
+  names, only when the record's outer type and inner role agree, and only
+  when no field anywhere in the envelope contradicts it, never from program
+  output or bare text; a transcript with an unparsable line promotes nothing;
+  several
   results for one call combine failure first; a call id reused for different
   calls, or a call found outside a recognized tool call position, attributes
   no result; call-shaped objects inside user or tool content are never
@@ -68,9 +71,12 @@ All notable changes to this project will be documented in this file.
   session, without ever changing a Star. With `--from codex` or `--from
   gemini` the hooks answer `{}` when silent, as those hook contracts require.
 - Bundle a Claude Code plugin marketplace with hooks and a `/thanks` command.
-- Name hook logs and reports after a sanitized session id plus a hash of the
-  original id, always, so distinct sessions never share a file; a session
-  without an id uses its own `unscoped` file.
+- Scope hook logs, reports, and announcements by the session or thread
+  identifier every supported hook contract carries, or by the transcript path
+  when a payload lacks one; a payload with neither is not recorded and never
+  announced. File names are a sanitized prefix plus a hash of the whole scope,
+  so distinct sessions never share a file. Commands are stored and compared
+  with outer whitespace removed.
 - Document pip and release-wheel installation for environments without `pipx`.
 
 ## 0.4.2 - 2026-09-02

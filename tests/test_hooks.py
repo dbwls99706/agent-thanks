@@ -64,7 +64,7 @@ class HookRecordTests(IsolatedEnvironmentTestCase):
             self.assertEqual(run(["hook", "record", "--from", "claude-code", json.dumps(before)]), (0, ""))
 
             state = root / ".agent-thanks"
-            entries = [json.loads(line) for line in (state / "sessions" / f"{session_file_stem('s1')}.jsonl").read_text(encoding="utf-8").splitlines()]
+            entries = [json.loads(line) for line in (state / "sessions" / f"{session_file_stem('id:s1')}.jsonl").read_text(encoding="utf-8").splitlines()]
             self.assertEqual(len(entries), 1)
             self.assertEqual(entries[0]["command"], "git clone https://github.com/x/y")
             self.assertEqual((entries[0]["status"], entries[0]["basis"], entries[0]["agent"], entries[0]["tool_call_id"]),
@@ -79,7 +79,7 @@ class HookRecordTests(IsolatedEnvironmentTestCase):
                        "tool_input": {"command": "git clone https://github.com/codex/shaped"},
                        "tool_response": {"stdout": "fatal: repository not found"}}
             self.assertEqual(run(["hook", "record", json.dumps(payload)]), (0, ""))
-            entries = [json.loads(line) for line in (Path(directory) / ".agent-thanks" / "sessions" / f"{session_file_stem('s')}.jsonl").read_text(encoding="utf-8").splitlines()]
+            entries = [json.loads(line) for line in (Path(directory) / ".agent-thanks" / "sessions" / f"{session_file_stem('id:s')}.jsonl").read_text(encoding="utf-8").splitlines()]
             self.assertEqual((entries[0]["status"], entries[0]["basis"], entries[0]["agent"]), ("unknown", "no_result", None))
 
     def test_hook_log_is_primary_and_transcript_is_merged(self) -> None:
@@ -102,7 +102,7 @@ class HookRecordTests(IsolatedEnvironmentTestCase):
             message = json.loads(output)["systemMessage"]
             self.assertIn("hooked/repo", message)
             self.assertIn("prose/claim", message)
-            report = json.loads((Path(directory) / ".agent-thanks" / "reports" / f"{session_file_stem('s')}.json").read_text(encoding="utf-8"))
+            report = json.loads((Path(directory) / ".agent-thanks" / "reports" / f"{session_file_stem('id:s')}.json").read_text(encoding="utf-8"))
             hooked = next(c for c in report["candidates"] if c["repository"] == "hooked/repo")
             self.assertTrue(hooked["recommended"])
             # The hook entry and the transcript call it confirms are both high; nothing is left unjudged.
@@ -124,7 +124,7 @@ class HookRecordTests(IsolatedEnvironmentTestCase):
             run(["hook", "record", "--from", "codex", json.dumps(record)])
             payload = json.dumps({"cwd": directory, "session_id": "s", "transcript_path": str(transcript)})
             self.assertEqual(run(["hook", "stop", "--offline", payload]), (0, ""))
-            report = json.loads((Path(directory) / ".agent-thanks" / "reports" / f"{session_file_stem('s')}.json").read_text(encoding="utf-8"))
+            report = json.loads((Path(directory) / ".agent-thanks" / "reports" / f"{session_file_stem('id:s')}.json").read_text(encoding="utf-8"))
             candidate = report["candidates"][0]
             self.assertFalse(candidate["recommended"])
             self.assertTrue(all(e["confidence"] == "low" for e in candidate["evidence"]))
@@ -139,7 +139,7 @@ class HookRecordTests(IsolatedEnvironmentTestCase):
                 self.assertEqual(run(["hook", "record", "--from", "codex", json.dumps(record)]), (0, "{}\n"))
             payload = json.dumps({"cwd": directory, "session_id": "s"})
             self.assertEqual(run(["hook", "stop", "--from", "codex", "--offline", payload]), (0, "{}\n"))
-            report = json.loads((Path(directory) / ".agent-thanks" / "reports" / f"{session_file_stem('s')}.json").read_text(encoding="utf-8"))
+            report = json.loads((Path(directory) / ".agent-thanks" / "reports" / f"{session_file_stem('id:s')}.json").read_text(encoding="utf-8"))
             candidate = report["candidates"][0]
             self.assertEqual(candidate["repository"], "conflict/hook")
             self.assertFalse(candidate["recommended"])
@@ -161,7 +161,7 @@ class HookRecordTests(IsolatedEnvironmentTestCase):
             self.assertEqual(run(["hook", "record", "--from", "codex", json.dumps(record)]), (0, "{}\n"))
             payload = json.dumps({"cwd": directory, "session_id": "s", "transcript_path": str(transcript)})
             self.assertEqual(run(["hook", "stop", "--from", "codex", "--offline", payload]), (0, "{}\n"))
-            report = json.loads((Path(directory) / ".agent-thanks" / "reports" / f"{session_file_stem('s')}.json").read_text(encoding="utf-8"))
+            report = json.loads((Path(directory) / ".agent-thanks" / "reports" / f"{session_file_stem('id:s')}.json").read_text(encoding="utf-8"))
             candidate = report["candidates"][0]
             self.assertEqual(candidate["repository"], "mismatch/command")
             self.assertFalse(candidate["recommended"])
@@ -183,7 +183,7 @@ class HookRecordTests(IsolatedEnvironmentTestCase):
             record(["--from", "codex"], "Exit code: 0\nOutput:\nCloning...", "git clone https://github.com/codex/zero")
             record(["--from", "codex"], "Exit code: 128\nOutput:\nfatal", "git clone https://github.com/codex/failed")
             record([], {"stdout": ""}, "git clone https://github.com/generic/unknown")
-            entries = [json.loads(line) for line in (Path(directory) / ".agent-thanks" / "sessions" / f"{session_file_stem('s')}.jsonl").read_text(encoding="utf-8").splitlines()]
+            entries = [json.loads(line) for line in (Path(directory) / ".agent-thanks" / "sessions" / f"{session_file_stem('id:s')}.jsonl").read_text(encoding="utf-8").splitlines()]
             self.assertEqual([(e["status"], e["basis"]) for e in entries],
                              [("unknown", "no_result"), ("ok", "exit_status"), ("error", "tool_response"), ("unknown", "no_result")])
 
@@ -193,7 +193,7 @@ class HookRecordTests(IsolatedEnvironmentTestCase):
             self.assertIn("codex/zero", message)
             for repository in ("codex/unknown", "codex/failed", "generic/unknown"):
                 self.assertNotIn(repository, message)
-            report = json.loads((Path(directory) / ".agent-thanks" / "reports" / f"{session_file_stem('s')}.json").read_text(encoding="utf-8"))
+            report = json.loads((Path(directory) / ".agent-thanks" / "reports" / f"{session_file_stem('id:s')}.json").read_text(encoding="utf-8"))
             by_repo = {c["repository"]: c for c in report["candidates"]}
             self.assertTrue(by_repo["codex/zero"]["recommended"])
             self.assertIn("failed", by_repo["codex/failed"]["evidence"][0]["detail"])
@@ -216,7 +216,8 @@ class HookStopTests(IsolatedEnvironmentTestCase):
             self.assertEqual(status, 0)
             message = json.loads(output)["systemMessage"]
             self.assertIn("BehaviorTree/BehaviorTree.CPP", message)
-            self.assertIn("agent-thanks star .agent-thanks/report.json", message)
+            # Without a session id the payload is scoped by its transcript path; the latest copy still lands in report.json.
+            self.assertIn("agent-thanks star .agent-thanks/reports/", message)
             self.assertNotIn("Would star", output)
 
             report = json.loads((root / ".agent-thanks" / "report.json").read_text(encoding="utf-8"))
@@ -227,10 +228,10 @@ class HookStopTests(IsolatedEnvironmentTestCase):
 
     def test_falls_back_to_recorded_session_log(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            record = {"cwd": directory, "hook_event_name": "PostToolUse", "tool_use_id": "t1", "tool_name": "Bash",
-                      "tool_input": {"command": "gh repo clone acme/tool"}}
+            record = {"cwd": directory, "session_id": "fallback", "hook_event_name": "PostToolUse", "tool_use_id": "t1",
+                      "tool_name": "Bash", "tool_input": {"command": "gh repo clone acme/tool"}}
             run(["hook", "record", "--from", "claude-code", json.dumps(record)])
-            status, output = run(["hook", "stop", "--offline", json.dumps({"cwd": directory})])
+            status, output = run(["hook", "stop", "--offline", json.dumps({"cwd": directory, "session_id": "fallback"})])
             self.assertEqual(status, 0)
             self.assertIn("acme/tool", json.loads(output)["systemMessage"])
 
@@ -268,7 +269,7 @@ class HookLogSchemaTests(IsolatedEnvironmentTestCase):
             sessions.mkdir(parents=True)
             shaped = {"command": "git clone https://github.com/shape/confused", "status": "ok", "basis": "model-output",
                       "tool_call_id": "x1", "agent": "claude-code"}
-            (sessions / f"{session_file_stem('shape')}.jsonl").write_text(json.dumps(shaped) + "\n", encoding="utf-8")
+            (sessions / f"{session_file_stem('id:shape')}.jsonl").write_text(json.dumps(shaped) + "\n", encoding="utf-8")
             self.assertEqual(run(["hook", "stop", "--offline", json.dumps({"cwd": directory, "session_id": "shape"})]), (0, ""))
 
             base = {"schema": "agent-thanks/hook-log/1", "agent": "claude-code", "event": "PostToolUse", "tool": "Bash",
@@ -281,11 +282,11 @@ class HookLogSchemaTests(IsolatedEnvironmentTestCase):
                 dict(base, tool_call_id="", command="git clone https://github.com/partial/empty-id"),
                 dict(base, agent="unknown-agent", tool_call_id="c4", command="git clone https://github.com/partial/agent"),
             ]
-            (sessions / f"{session_file_stem('partial')}.jsonl").write_text("".join(json.dumps(e) + "\n" for e in [base, *incomplete]), encoding="utf-8")
+            (sessions / f"{session_file_stem('id:partial')}.jsonl").write_text("".join(json.dumps(e) + "\n" for e in [base, *incomplete]), encoding="utf-8")
             status, output = run(["hook", "stop", "--offline", json.dumps({"cwd": directory, "session_id": "partial"})])
             self.assertEqual(status, 0)
             self.assertIn("partial/complete", json.loads(output)["systemMessage"])
-            report = json.loads((Path(directory) / ".agent-thanks" / "reports" / f"{session_file_stem('partial')}.json").read_text(encoding="utf-8"))
+            report = json.loads((Path(directory) / ".agent-thanks" / "reports" / f"{session_file_stem('id:partial')}.json").read_text(encoding="utf-8"))
             by_repo = {c["repository"]: c for c in report["candidates"]}
             self.assertTrue(by_repo["partial/complete"]["recommended"])
             for repository in ("partial/no-agent", "partial/basis", "partial/no-id", "partial/empty-id", "partial/agent"):
@@ -313,7 +314,7 @@ class PromotionGateTests(IsolatedEnvironmentTestCase):
             run(["hook", "record", *(["--from", "claude-code"] if agent is None else agent), record])
         for record in extra_records or []:
             run(["hook", "record", "--from", "claude-code", json.dumps(dict(record, cwd=directory, session_id="g"))])
-        log = Path(directory) / ".agent-thanks" / "sessions" / f"{session_file_stem('g')}.jsonl"
+        log = Path(directory) / ".agent-thanks" / "sessions" / f"{session_file_stem('id:g')}.jsonl"
         if (strip_schema or edit_log) and log.is_file():
             entries = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
             for entry in entries:
@@ -337,7 +338,7 @@ class PromotionGateTests(IsolatedEnvironmentTestCase):
         stop = json.dumps({"cwd": directory, "session_id": "g", "transcript_path": str(transcript)})
         status, output = run(["hook", "stop", "--from", "claude-code", "--offline", stop])
         self.assertEqual(status, 0)
-        report_path = Path(directory) / ".agent-thanks" / "reports" / f"{session_file_stem('g')}.json"
+        report_path = Path(directory) / ".agent-thanks" / "reports" / f"{session_file_stem('id:g')}.json"
         report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.is_file() else {"candidates": []}
         candidates = {c["repository"]: c for c in report["candidates"]}
         return {"announced": bool(output.strip()), "candidate": candidates.get("gate/repo")}
@@ -428,7 +429,7 @@ class HookContractTests(IsolatedEnvironmentTestCase):
                 if response is not None:
                     payload["tool_response"] = response
                 self.assertEqual(run(["hook", "record", *agent, json.dumps(payload)])[0], 0)
-                log = Path(directory) / ".agent-thanks" / "sessions" / f"{session_file_stem('m')}.jsonl"
+                log = Path(directory) / ".agent-thanks" / "sessions" / f"{session_file_stem('id:m')}.jsonl"
                 entry = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
                 self.assertEqual((entry["status"], entry["basis"]), expected)
                 self.assertEqual((entry["agent"], entry["event"], entry["tool"]), (agent[-1] if agent else None, event, tool))
@@ -453,7 +454,7 @@ class HookContractTests(IsolatedEnvironmentTestCase):
                 sessions = Path(directory) / ".agent-thanks" / "sessions"
                 sessions.mkdir(parents=True)
                 entry = dict(base, agent=agent, event=event, tool=tool, basis=basis)
-                (sessions / f"{session_file_stem('m')}.jsonl").write_text(json.dumps(entry) + "\n", encoding="utf-8")
+                (sessions / f"{session_file_stem('id:m')}.jsonl").write_text(json.dumps(entry) + "\n", encoding="utf-8")
                 status, output = run(["hook", "stop", "--offline", json.dumps({"cwd": directory, "session_id": "m"})])
                 self.assertEqual(status, 0)
                 self.assertEqual(bool(output.strip()), promoted)
@@ -466,9 +467,9 @@ class HookContractTests(IsolatedEnvironmentTestCase):
             with self.subTest(tail=tail), tempfile.TemporaryDirectory() as directory:
                 sessions = Path(directory) / ".agent-thanks" / "sessions"
                 sessions.mkdir(parents=True)
-                (sessions / f"{session_file_stem('c')}.jsonl").write_text(json.dumps(good) + "\n" + tail + "\n", encoding="utf-8")
+                (sessions / f"{session_file_stem('id:c')}.jsonl").write_text(json.dumps(good) + "\n" + tail + "\n", encoding="utf-8")
                 self.assertEqual(run(["hook", "stop", "--offline", json.dumps({"cwd": directory, "session_id": "c"})]), (0, ""))
-                report = json.loads((Path(directory) / ".agent-thanks" / "reports" / f"{session_file_stem('c')}.json").read_text(encoding="utf-8"))
+                report = json.loads((Path(directory) / ".agent-thanks" / "reports" / f"{session_file_stem('id:c')}.json").read_text(encoding="utf-8"))
                 self.assertFalse(report["candidates"][0]["recommended"])
 
     def test_hook_success_never_overrides_a_transcript_failure(self) -> None:
@@ -481,22 +482,22 @@ class HookContractTests(IsolatedEnvironmentTestCase):
             self.assertEqual(run(["hook", "record", "--from", "claude-code", json.dumps(record)]), (0, ""))
             payload = json.dumps({"cwd": directory, "session_id": "s", "transcript_path": str(transcript)})
             self.assertEqual(run(["hook", "stop", "--from", "claude-code", "--offline", payload]), (0, ""))
-            report = json.loads((Path(directory) / ".agent-thanks" / "reports" / f"{session_file_stem('s')}.json").read_text(encoding="utf-8"))
+            report = json.loads((Path(directory) / ".agent-thanks" / "reports" / f"{session_file_stem('id:s')}.json").read_text(encoding="utf-8"))
             candidate = report["candidates"][0]
             self.assertFalse(candidate["recommended"])
             self.assertEqual({e["confidence"] for e in candidate["evidence"]}, {"low"})
 
     def test_session_file_names_never_collide(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            def record(session: str | None, repository: str) -> None:
+            def record(session: str | None, repository: str, **extra: object) -> None:
                 payload = {"cwd": directory, "hook_event_name": "PostToolUse", "tool_use_id": "t1", "tool_name": "Bash",
-                           "tool_input": {"command": f"git clone https://github.com/{repository}"}}
+                           "tool_input": {"command": f"git clone https://github.com/{repository}"}, **extra}
                 if session is not None:
                     payload["session_id"] = session
                 self.assertEqual(run(["hook", "record", "--from", "claude-code", json.dumps(payload)]), (0, ""))
 
-            def stop(session: str | None) -> str:
-                payload = {"cwd": directory}
+            def stop(session: str | None, **extra: object) -> str:
+                payload = {"cwd": directory, **extra}
                 if session is not None:
                     payload["session_id"] = session
                 status, output = run(["hook", "stop", "--from", "claude-code", "--offline", json.dumps(payload)])
@@ -505,21 +506,43 @@ class HookContractTests(IsolatedEnvironmentTestCase):
 
             first = "collision/a"
             record(first, "collide/slash")
-            lookalikes = ["collision?a", session_file_stem(first), "default", None]
+            lookalikes = ["collision?a", session_file_stem(f"id:{first}"), "default", "id:collision/a", None]
             for other in lookalikes:
                 self.assertEqual(stop(other), "", other)  # no log of its own, nothing to announce
             self.assertIn("collide/slash", json.loads(stop(first))["systemMessage"])
 
+            # A payload without any session identifier is scoped by its transcript path, or not recorded at all.
             record(None, "collide/unscoped")
+            self.assertFalse(any(p.name for p in (Path(directory) / ".agent-thanks" / "sessions").iterdir() if "unscoped" in p.name))
+            transcript = Path(directory) / "t.jsonl"
+            write_transcript(transcript, "git clone https://github.com/collide/by-transcript")
+            record(None, "collide/by-transcript", transcript_path=str(transcript))
+            self.assertIn("collide/by-transcript", json.loads(stop(None, transcript_path=str(transcript)))["systemMessage"])
+            self.assertEqual(stop(None, transcript_path=str(transcript)), "")
             record("default", "collide/default")
-            self.assertIn("collide/unscoped", json.loads(stop(None))["systemMessage"])
             self.assertIn("collide/default", json.loads(stop("default"))["systemMessage"])
-            sessions = Path(directory) / ".agent-thanks" / "sessions"
-            names = sorted(p.name for p in sessions.iterdir())
-            self.assertEqual(len(names), 3)
-            self.assertIn("unscoped.jsonl", names)
             announced = json.loads((Path(directory) / ".agent-thanks" / "announced.json").read_text(encoding="utf-8"))
-            self.assertEqual(set(announced), {"id:collision/a", "unscoped", "id:default"})
+            self.assertEqual(set(announced), {"id:collision/a", f"transcript:{transcript}", "id:default"})
+
+    def test_hook_payloads_without_a_scope_record_and_announce_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            record = {"cwd": directory, "hook_event_name": "PostToolUse", "tool_use_id": "t1", "tool_name": "Bash",
+                      "tool_input": {"command": "git clone https://github.com/scope/less"}}
+            self.assertEqual(run(["hook", "record", "--from", "claude-code", json.dumps(record)]), (0, ""))
+            sessions = Path(directory) / ".agent-thanks" / "sessions"
+            self.assertFalse(sessions.exists() and any(sessions.iterdir()))
+            self.assertEqual(run(["hook", "stop", "--from", "claude-code", "--offline", json.dumps({"cwd": directory})]), (0, ""))
+
+    def test_a_contradictory_field_inside_a_hook_response_is_a_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            record = {"cwd": directory, "session_id": "s", "hook_event_name": "PostToolUse", "tool_use_id": "c1",
+                      "tool_name": "Bash", "tool_input": {"command": "git clone https://github.com/nested/failure"},
+                      "tool_response": {"exit_code": 0, "returncode": 128}}
+            self.assertEqual(run(["hook", "record", "--from", "codex", json.dumps(record)]), (0, "{}\n"))
+            self.assertEqual(run(["hook", "stop", "--from", "codex", "--offline", json.dumps({"cwd": directory, "session_id": "s"})]), (0, "{}\n"))
+            report = json.loads((Path(directory) / ".agent-thanks" / "reports" / f"{session_file_stem('id:s')}.json").read_text(encoding="utf-8"))
+            self.assertFalse(report["candidates"][0]["recommended"])
+            self.assertIn("failed", report["candidates"][0]["evidence"][0]["detail"])
 
     def test_codex_hooks_answer_with_an_empty_object_when_silent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -544,7 +567,7 @@ class HookContractTests(IsolatedEnvironmentTestCase):
             self.assertEqual(run(["hook", "record", "--from", "claude-code", json.dumps(record)]), (0, ""))
             payload = json.dumps({"cwd": directory, "session_id": "s", "transcript_path": str(transcript)})
             self.assertEqual(run(["hook", "stop", "--from", "claude-code", "--offline", payload]), (0, ""))
-            report = json.loads((Path(directory) / ".agent-thanks" / "reports" / f"{session_file_stem('s')}.json").read_text(encoding="utf-8"))
+            report = json.loads((Path(directory) / ".agent-thanks" / "reports" / f"{session_file_stem('id:s')}.json").read_text(encoding="utf-8"))
             candidate = report["candidates"][0]
             self.assertFalse(candidate["recommended"])
             self.assertTrue(all(e["confidence"] == "low" for e in candidate["evidence"]))
@@ -578,8 +601,8 @@ class CodexNotifyTests(IsolatedEnvironmentTestCase):
                 self.assertEqual(status, 0)
                 message = json.loads(output)["systemMessage"]
                 self.assertIn("codex/located", message)
-                self.assertIn(f".agent-thanks/reports/{session_file_stem('thread-1')}.json", message)
-                self.assertTrue((project / ".agent-thanks" / "reports" / f"{session_file_stem('thread-1')}.json").is_file())
+                self.assertIn(f".agent-thanks/reports/{session_file_stem('id:thread-1')}.json", message)
+                self.assertTrue((project / ".agent-thanks" / "reports" / f"{session_file_stem('id:thread-1')}.json").is_file())
                 self.assertTrue((project / ".agent-thanks" / "report.json").is_file())
 
                 other = Path(directory) / "other"
@@ -604,7 +627,7 @@ class CodexNotifyTests(IsolatedEnvironmentTestCase):
             message = json.loads(output)["systemMessage"]
             self.assertIn("thread/a", message)
             self.assertNotIn("thread/b", message)
-            report = json.loads((project / ".agent-thanks" / "reports" / f"{session_file_stem('thread-A')}.json").read_text(encoding="utf-8"))
+            report = json.loads((project / ".agent-thanks" / "reports" / f"{session_file_stem('id:thread-A')}.json").read_text(encoding="utf-8"))
             self.assertEqual([c["repository"] for c in report["candidates"]], ["thread/a"])
 
     def test_agent_is_inferred_from_the_payload_shape(self) -> None:
@@ -628,13 +651,13 @@ class SessionScopeTests(IsolatedEnvironmentTestCase):
                 record = {"cwd": directory, "session_id": session, "hook_event_name": "PostToolUse", "tool_use_id": "t1",
                           "tool_name": "Bash", "tool_input": {"command": "git clone https://github.com/shared/repo"}}
                 run(["hook", "record", "--from", "claude-code", json.dumps(record)])
-            self.assertTrue((root / ".agent-thanks" / "sessions" / f"{session_file_stem('s-one')}.jsonl").is_file())
-            self.assertTrue((root / ".agent-thanks" / "sessions" / f"{session_file_stem('s-two')}.jsonl").is_file())
+            self.assertTrue((root / ".agent-thanks" / "sessions" / f"{session_file_stem('id:s-one')}.jsonl").is_file())
+            self.assertTrue((root / ".agent-thanks" / "sessions" / f"{session_file_stem('id:s-two')}.jsonl").is_file())
 
             first = run(["hook", "stop", "--offline", json.dumps({"cwd": directory, "session_id": "s-one"})])
             self.assertIn("shared/repo", json.loads(first[1])["systemMessage"])
-            self.assertIn(f".agent-thanks/reports/{session_file_stem('s-one')}.json", json.loads(first[1])["systemMessage"])
-            self.assertTrue((root / ".agent-thanks" / "reports" / f"{session_file_stem('s-one')}.json").is_file())
+            self.assertIn(f".agent-thanks/reports/{session_file_stem('id:s-one')}.json", json.loads(first[1])["systemMessage"])
+            self.assertTrue((root / ".agent-thanks" / "reports" / f"{session_file_stem('id:s-one')}.json").is_file())
             again = run(["hook", "stop", "--offline", json.dumps({"cwd": directory, "session_id": "s-one"})])
             self.assertEqual(again, (0, ""))
             second_session = run(["hook", "stop", "--offline", json.dumps({"cwd": directory, "session_id": "s-two"})])
@@ -658,7 +681,7 @@ class SessionScopeTests(IsolatedEnvironmentTestCase):
             record({"exit_code": 1}, "git clone https://github.com/x/code")
             record({"exit_code": 0}, "git clone https://github.com/x/zero")
             record({"stdout": "Cloning into 'y'...", "stderr": ""}, "git clone https://github.com/x/event")
-            entries = [json.loads(line) for line in (Path(directory) / ".agent-thanks" / "sessions" / f"{session_file_stem('s')}.jsonl").read_text(encoding="utf-8").splitlines()]
+            entries = [json.loads(line) for line in (Path(directory) / ".agent-thanks" / "sessions" / f"{session_file_stem('id:s')}.jsonl").read_text(encoding="utf-8").splitlines()]
             self.assertEqual([entry["status"] for entry in entries], ["error", "error", "error", "ok", "ok"])
             self.assertEqual(entries[-1]["basis"], "successful_post_tool_event")
 

@@ -256,8 +256,9 @@ ways, and neither interrupts the agent or changes a Star:
    writes (`is_error` equal to `false` in a Claude Code `tool_result` inside a
    user message, or an exit code of 0 in the JSON or header envelope Codex
    writes for its own `shell` or `exec_command` tool; Gemini records no
-   success signal) with no failure signal beside it, the call id is used for
-   that call alone, the transcript has no unparsable line, the
+   success signal) after the call and with no failure signal anywhere in the
+   envelope, the record's outer type and inner role agree, the call id is used
+   for that call alone, the transcript has no unparsable line, the
    call is a single logical line, and the statement is a single command or an
    `&&` chain whose other segments are trivially safe (`cd`, `mkdir`, `echo`,
    and similar). Program output and bare text can never supply a success
@@ -304,9 +305,12 @@ ways, and neither interrupts the agent or changes a Star:
    through its own `.gitignore`. Hooks exit successfully even when something
    goes wrong, so they can never block the agent, and with `--from codex` or
    `--from gemini` they print `{}` whenever they have nothing to say, because
-   those agents parse a hook's standard output as JSON. Session ids become file
-   names through a sanitized prefix plus a hash of the original id, so two
-   sessions never share a log or a report.
+   those agents parse a hook's standard output as JSON. Every supported hook
+   contract carries a session or thread identifier, which scopes the log, the
+   report, and the announcements; a payload without one is scoped by its
+   transcript path, and without either nothing is recorded and nothing is
+   announced. Scopes become file names through a sanitized prefix plus a hash
+   of the whole scope, so two sessions never share a log or a report.
 
 Find the newest transcript for the current project without knowing its path:
 

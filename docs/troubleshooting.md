@@ -124,8 +124,9 @@ copy at `.agent-thanks/report.json`) for the full result, including references
 and unresolved dependencies. The hook also stays silent when the turn ran no shell
 commands, when every clone or install in the turn failed or left no judgeable
 result (every Gemini CLI turn, until Gemini records an explicit success; with
-`--from gemini` the hook then prints `{}`), when a hook log entry and the
-transcript disagree about the command behind one tool call, when
+`--from codex` or `--from gemini` the hook then prints `{}`), when a hook log
+entry and the transcript disagree about the command behind one tool call, when
+the payload carries neither a session identifier nor a transcript path, when
 the transcript path is missing and `--from` cannot find a
 transcript whose recorded directory and session match, or when `agent-thanks`
 is not on `PATH` for the agent's shell. Only

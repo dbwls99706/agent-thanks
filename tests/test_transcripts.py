@@ -197,6 +197,14 @@ class ResultStatusTests(unittest.TestCase):
         self.assertEqual(result_status({"exit_code": 0}, agent="gemini"), RESULT_UNKNOWN)
         self.assertEqual(result_status({"data": {"exitCode": 1, "isError": True}}, agent="gemini"), RESULT_ERROR)
         self.assertEqual(result_status({"is_error": True}), RESULT_ERROR)
+        # One contradictory field anywhere in the envelope is a failure, whichever field is read first.
+        self.assertEqual(result_status({"exit_code": 0, "returncode": 128}, agent="codex"), RESULT_ERROR)
+        self.assertEqual(result_status({"metadata": {"exit_code": 0, "status": "failed"}}, agent="codex"), RESULT_ERROR)
+        self.assertEqual(result_status({"is_error": False, "metadata": {"is_error": True}}, agent="claude-code"), RESULT_ERROR)
+        self.assertEqual(result_status({"is_error": False, "metadata": {"exit_code": 1}}, agent="claude-code"), RESULT_ERROR)
+        self.assertEqual(result_status(json.dumps({"exit_code": 0, "metadata": {"returncode": 2}}), agent="codex"), RESULT_ERROR)
+        self.assertEqual(result_status({"exit_code": 0, "data": {"isError": True}}, agent="codex"), RESULT_ERROR)
+        self.assertEqual(result_status({"exit_code": 0, "metadata": {"exit_code": 0}}, agent="codex"), RESULT_OK)
         self.assertEqual(result_status([{"type": "text", "text": "Cloning..."}]), RESULT_UNKNOWN)
         self.assertEqual(result_status(None), RESULT_UNKNOWN)
 
@@ -347,6 +355,8 @@ class ResultStatusTests(unittest.TestCase):
             ])
             write_jsonl(path, records)
             records.extend([
+                {"type": "function_call", "name": "shell", "call_id": "c7", "arguments": json.dumps({"command": "git clone https://github.com/hook/trailing-newline"})},
+                {"type": "function_call_output", "call_id": "c7", "output": json.dumps({"output": "", "metadata": {"exit_code": 0}})},
                 {"type": "function_call", "name": "shell", "call_id": "c5", "arguments": json.dumps({"command": "cd /tmp && git clone https://github.com/hook/newline"})},
                 {"type": "function_call_output", "call_id": "c5", "output": json.dumps({"output": "", "metadata": {"exit_code": 0}})},
                 {"type": "function_call", "name": "shell", "call_id": "c6", "arguments": json.dumps({"command": "git clone https://github.com/hook/no-command"})},
@@ -359,6 +369,7 @@ class ResultStatusTests(unittest.TestCase):
                 "c4": HookStatus("ok", "echo ok"),
                 "c5": HookStatus("ok", "cd /tmp &&\ngit clone https://github.com/hook/newline"),
                 "c6": HookStatus("ok", None),
+                "c7": HookStatus("ok", "git clone https://github.com/hook/trailing-newline\n"),
             }
             evidence = evidence_by_repository(
                 scan_transcript_evidence(path, "r.jsonl", authoritative=authoritative)
@@ -372,6 +383,8 @@ class ResultStatusTests(unittest.TestCase):
         self.assertEqual(evidence["hook/newline"].confidence, "low")
         self.assertIn("disagree about the command", evidence["hook/newline"].detail)
         self.assertEqual(evidence["hook/no-command"].confidence, "low")
+        # Outer whitespace is not a different command; inner structure is.
+        self.assertEqual(evidence["hook/trailing-newline"].confidence, "high")
 
     def test_results_prove_success_only_in_their_agents_positions(self) -> None:
         command = "git clone https://github.com/placed/{name}"
@@ -410,6 +423,53 @@ class ResultStatusTests(unittest.TestCase):
         # A misplaced failure still counts as a failure.
         self.assertEqual(evidence["placed/assistant-failure"].confidence, "low")
         self.assertIn("failed", evidence["placed/assistant-failure"].detail)
+
+    def test_a_success_recorded_before_its_call_proves_nothing(self) -> None:
+        call = {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "git clone https://github.com/order/{name}"}}
+        ok = {"type": "tool_result", "tool_use_id": "t1", "is_error": False, "content": "Cloning..."}
+        failed = {"type": "tool_result", "tool_use_id": "t1", "is_error": True, "content": "fatal"}
+        def transcript(*items):
+            return [{"type": kind, "message": {"role": kind, "content": [item]}} for kind, item in items]
+        def named(item, name):
+            copy = json.loads(json.dumps(item))
+            copy["input"]["command"] = copy["input"]["command"].format(name=name)
+            return copy
+        cases = {
+            "before": (transcript(("user", ok), ("assistant", named(call, "before"))), "low", "cannot be judged"),
+            "after": (transcript(("assistant", named(call, "after")), ("user", ok)), "high", "completed successfully"),
+            "failure-before": (transcript(("user", failed), ("assistant", named(call, "failure-before"))), "low", "failed"),
+            # A success recorded before the call is an anomaly; it leaves the call unjudgeable even if a later success follows.
+            "both": (transcript(("user", ok), ("assistant", named(call, "both")), ("user", ok)), "low", "cannot be judged"),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for name, (records, confidence, detail) in cases.items():
+                with self.subTest(order=name):
+                    path = Path(directory) / f"{name}.jsonl"
+                    write_jsonl(path, records)
+                    evidence = evidence_by_repository(scan_transcript_evidence(path, f"{name}.jsonl"))
+                    self.assertEqual(evidence[f"order/{name}"].confidence, confidence)
+                    self.assertIn(detail, evidence[f"order/{name}"].detail)
+
+    def test_conflicting_record_types_and_roles_never_prove_success(self) -> None:
+        call = {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "git clone https://github.com/roles/conflict"}}
+        ok = {"type": "tool_result", "tool_use_id": "t1", "is_error": False, "content": "Cloning..."}
+        records = [
+            {"type": "assistant", "message": {"role": "assistant", "content": [call]}},
+            {"type": "user", "message": {"role": "assistant", "content": [ok]}},
+        ]
+        forged_call = [
+            {"type": "user", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "git clone https://github.com/roles/forged-call"}}]}},
+            {"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t2", "is_error": False, "content": "Cloning..."}]}},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "t.jsonl"
+            write_jsonl(path, records + forged_call)
+            evidence = evidence_by_repository(scan_transcript_evidence(path, "t.jsonl"))
+        self.assertEqual(evidence["roles/conflict"].confidence, "low")
+        self.assertIn("cannot be judged", evidence["roles/conflict"].detail)
+        self.assertNotIn("roles/forged-call", evidence)
 
     def test_a_corrupted_transcript_promotes_nothing(self) -> None:
         records = [

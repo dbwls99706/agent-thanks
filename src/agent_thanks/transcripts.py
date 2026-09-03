@@ -74,6 +74,9 @@ _SHELL_COMMAND_FLAGS = {"-c", "-lc", "-ic", "-lic", "-cl", "/c", "-command"}
 _PARAMETER_KEYS = ("input", "args", "arguments", "parameters", "params")
 _ASSISTANT_ROLES = {"assistant", "model", "gemini", "ai"}
 _USER_ROLES = {"user", "human", "tool", "function", "system"}
+_ROLE_CONFLICT = "conflict"
+_EXIT_KEYS = ("exit_code", "exitCode", "returncode", "status_code")
+_STRUCTURED_KEYS = ("metadata", "data")
 _OUTPUT_KEYS = {
     "tool_result",
     "output",
@@ -133,6 +136,11 @@ _META_SESSION_KEYS = ("id", "session_id", "sessionId", "thread_id", "threadId")
 _RECORD_SESSION_KEYS = ("session_id", "sessionId", "thread_id", "threadId")
 
 TranscriptRecord = tuple[int, str, str, str | None]
+
+
+def canonical_command(command: str) -> str:
+    """Return the form in which every source stores and compares a command: outer whitespace removed."""
+    return command.strip()
 
 
 def is_shell_tool(name: object) -> bool:
@@ -218,8 +226,8 @@ def iter_transcript_records(
     with an unparsable line is 'corrupted'.
     """
     transcript = load_transcript(path)
-    calls = _index_calls(transcript.records)
-    results = _index_results(transcript.records, calls)
+    calls, positions = _index_calls(transcript.records)
+    results = _index_results(transcript.records, calls, positions)
     for number, record in transcript.records:
         for kind, text, outcome in _walk(record, None, 0, calls, results, authoritative):
             if kind == "command" and transcript.corrupted:
@@ -271,8 +279,8 @@ def transcript_calls(path: Path) -> dict[str, TranscriptCall]:
     or unknown without one.
     """
     transcript = load_transcript(path)
-    calls = _index_calls(transcript.records)
-    results = _index_results(transcript.records, calls)
+    calls, positions = _index_calls(transcript.records)
+    results = _index_results(transcript.records, calls, positions)
     known = {
         call_id: TranscriptCall(
             info.command if info is not None else None, results.get(call_id, RESULT_UNKNOWN), True
@@ -448,7 +456,7 @@ def scan_hook_log_evidence(
                 recorded = transcript_calls[call_id]
                 if recorded.recorded and recorded.command is None:
                     outcome = OUTCOME_AMBIGUOUS
-                elif recorded.recorded and recorded.command != command:
+                elif recorded.recorded and recorded.command != canonical_command(command):
                     outcome = OUTCOME_CONFLICT
                 elif recorded.status == RESULT_ERROR:
                     outcome = OUTCOME_ERROR
@@ -482,6 +490,8 @@ def _hook_log_entries(path: Path) -> HookLog:
             corrupted = True
             continue
         if isinstance(entry, dict) and entry.get("schema") == HOOK_LOG_SCHEMA:
+            if isinstance(entry.get("command"), str):
+                entry["command"] = canonical_command(entry["command"])
             entries.append((number, entry))
         else:
             corrupted = True
@@ -653,32 +663,47 @@ class CallInfo(NamedTuple):
     command: str | None
 
 
-def _index_calls(records: Iterable[tuple[int, Any]]) -> dict[str, CallInfo | None]:
-    """Map tool call identifiers to the call behind them, read from envelope positions only.
-
-    Calls inside user or tool content are never actions and are not indexed. An
-    identifier that the transcript reuses for different calls (another tool,
-    other parameters, or another record kind) maps to ``None``: no result can
-    then be attributed to any of them.
-    """
-    calls: dict[str, CallInfo | None] = {}
+def _iter_envelopes(records: Iterable[tuple[int, Any]]) -> Iterator[tuple[int, dict[str, Any], str | None]]:
+    """Yield every envelope position of a transcript in order with a running sequence number."""
+    position = 0
     for _, record in records:
         for node, role in _result_envelopes(record):
-            if role in _USER_ROLES:
-                continue
-            call = _call_of(node)
-            if call is None or call[2] is None:
-                continue
-            name, parameters, call_id = call
-            command = _command_of(parameters) if is_shell_tool(name) else None
-            info = CallInfo(
-                _call_kind(node), name, json.dumps(parameters, sort_keys=True, default=str), command
-            )
-            if call_id not in calls:
-                calls[call_id] = info
-            elif calls[call_id] != info:
-                calls[call_id] = None
-    return calls
+            position += 1
+            yield position, node, role
+
+
+def _index_calls(
+    records: Iterable[tuple[int, Any]],
+) -> tuple[dict[str, CallInfo | None], dict[str, int]]:
+    """Map tool call identifiers to the call behind them and to the position of that call.
+
+    Only envelope positions are read. Calls inside user or tool content, or in
+    a record whose outer type and inner role disagree, are never actions and
+    are not indexed. An identifier that the transcript reuses for different
+    calls (another tool, other parameters, or another record kind) maps to
+    ``None``: no result can then be attributed to any of them. The position is
+    that of the first occurrence, so a success recorded earlier can be told
+    apart from one recorded after the call.
+    """
+    calls: dict[str, CallInfo | None] = {}
+    positions: dict[str, int] = {}
+    for position, node, role in _iter_envelopes(records):
+        if role in _USER_ROLES or role == _ROLE_CONFLICT:
+            continue
+        call = _call_of(node)
+        if call is None or call[2] is None:
+            continue
+        name, parameters, call_id = call
+        command = _command_of(parameters) if is_shell_tool(name) else None
+        info = CallInfo(
+            _call_kind(node), name, json.dumps(parameters, sort_keys=True, default=str), command
+        )
+        if call_id not in calls:
+            calls[call_id] = info
+            positions[call_id] = position
+        elif calls[call_id] != info:
+            calls[call_id] = None
+    return calls, positions
 
 
 def _call_kind(node: dict[str, Any]) -> str:
@@ -691,7 +716,9 @@ def _call_kind(node: dict[str, Any]) -> str:
 
 
 def _index_results(
-    records: Iterable[tuple[int, Any]], calls: Mapping[str, CallInfo | None]
+    records: Iterable[tuple[int, Any]],
+    calls: Mapping[str, CallInfo | None],
+    positions: Mapping[str, int],
 ) -> dict[str, str]:
     """Map tool call identifiers to a combined status from recorded result envelopes.
 
@@ -700,14 +727,19 @@ def _index_results(
     inside program output are never indexed. Several results for one call are
     combined with failure first. ``calls`` identifies the call behind each
     result so a string result is interpreted only for the Codex records whose
-    envelope is known.
+    envelope is known, and ``positions`` places each call: a success recorded
+    before its call, or for a call the transcript never records, proves
+    nothing, while a failure counts wherever it appears.
     """
     statuses: dict[str, list[str]] = {}
-    for _, record in records:
-        for node, role in _result_envelopes(record):
-            entry = _result_of(node, role, calls)
-            if entry is not None:
-                statuses.setdefault(entry[0], []).append(entry[1])
+    for position, node, role in _iter_envelopes(records):
+        entry = _result_of(node, role, calls)
+        if entry is None:
+            continue
+        call_id, status = entry
+        if status == RESULT_OK and positions.get(call_id, position + 1) > position:
+            status = RESULT_UNKNOWN
+        statuses.setdefault(call_id, []).append(status)
     return {call_id: combine_statuses(values) for call_id, values in statuses.items()}
 
 
@@ -725,17 +757,18 @@ def _result_envelopes(record: Any) -> Iterator[tuple[dict[str, Any], str | None]
     payload = record.get("payload")
     if isinstance(payload, dict):
         yield payload, _role_of(payload, role)
-    message = record.get("message") if isinstance(record.get("message"), dict) else record
-    for container in (
-        message.get("content"),
-        message.get("parts"),
-        record.get("content"),
-        record.get("parts"),
-    ):
+    message = record.get("message") if isinstance(record.get("message"), dict) else None
+    # The message's own role governs its content; a record whose outer type and
+    # inner role disagree yields the conflict role, which no result may use.
+    content_role = _role_of(message, role) if message is not None else role
+    containers = (
+        [message.get("content"), message.get("parts")] if message is not None else []
+    ) + [record.get("content"), record.get("parts")]
+    for container in containers:
         if isinstance(container, list):
             for item in container:
                 if isinstance(item, dict):
-                    yield item, role
+                    yield item, content_role
 
 
 def _iter_dicts(node: Any, depth: int) -> Iterator[dict[str, Any]]:
@@ -780,31 +813,7 @@ def _envelope_signals(value: Any, depth: int, agent: str | None) -> tuple[int, i
     if depth > 4:
         return failures, successes
     if isinstance(value, dict):
-        if "is_error" in value:
-            flag = value["is_error"]
-            if flag is False:
-                if agent == "claude-code":
-                    successes += 1
-            elif flag is True or (not isinstance(flag, bool) and bool(flag)):
-                failures += 1
-        code = _exit_code(value)
-        if code is not None:
-            if code != 0:
-                failures += 1
-            elif agent == "codex":
-                successes += 1
-        if value.get("error"):
-            failures += 1
-        status = value.get("status")
-        if isinstance(status, str) and status.casefold() in _FAILURE_STATUSES:
-            failures += 1
-        data = value.get("data")
-        if isinstance(data, dict):
-            if _exit_code(data) not in (None, 0) or data.get("isError") is True:
-                failures += 1
-        for key in _RESULT_TEXT_KEYS:
-            failures += _output_failures(value.get(key), depth + 1)
-        return failures, successes
+        return _structured_signals(value, depth, agent)
     if isinstance(value, str):
         stripped = value.strip()
         if stripped.startswith("{"):
@@ -814,20 +823,7 @@ def _envelope_signals(value: Any, depth: int, agent: str | None) -> tuple[int, i
                 parsed = None
             if isinstance(parsed, dict):
                 # A JSON-encoded envelope: only Codex writes one, and only for its shell tools.
-                code = _exit_code(parsed)
-                if code is not None:
-                    if code != 0:
-                        failures += 1
-                    elif agent == "codex":
-                        successes += 1
-                if parsed.get("error"):
-                    failures += 1
-                status = parsed.get("status")
-                if isinstance(status, str) and status.casefold() in _FAILURE_STATUSES:
-                    failures += 1
-                for key in _RESULT_TEXT_KEYS:
-                    failures += _output_failures(parsed.get(key), depth + 1)
-                return failures, successes
+                return _structured_signals(parsed, depth, agent if agent == "codex" else None)
         header, body = _split_text_envelope(stripped) if agent == "codex" else ("", stripped)
         for match in _EXIT_CODE_PATTERN.finditer(header):
             if int(match.group(1)) == 0:
@@ -836,6 +832,48 @@ def _envelope_signals(value: Any, depth: int, agent: str | None) -> tuple[int, i
                 failures += 1
         failures += _output_failures(body, depth + 1)
         return failures, successes
+    return failures, successes
+
+
+def _structured_signals(mapping: dict[str, Any], depth: int, agent: str | None) -> tuple[int, int]:
+    """Collect every signal in a result object and its structured sub-objects.
+
+    Every ``is_error`` flag, every exit code field, every ``error``, every
+    failure ``status``, and every Gemini ``isError`` is read, at the top level
+    and inside ``metadata`` and ``data`` blocks, so one contradictory field
+    anywhere in the envelope makes the result a failure. Success is read only
+    from the agent's own field. Program output fields contribute failures only.
+    """
+    failures = successes = 0
+    if depth > 4:
+        return failures, successes
+    if "is_error" in mapping:
+        flag = mapping["is_error"]
+        if flag is False:
+            if agent == "claude-code":
+                successes += 1
+        elif flag is True or (not isinstance(flag, bool) and bool(flag)):
+            failures += 1
+    if mapping.get("isError") is True:
+        failures += 1
+    for code in _exit_codes(mapping):
+        if code != 0:
+            failures += 1
+        elif agent == "codex":
+            successes += 1
+    if mapping.get("error"):
+        failures += 1
+    status = mapping.get("status")
+    if isinstance(status, str) and status.casefold() in _FAILURE_STATUSES:
+        failures += 1
+    for key in _STRUCTURED_KEYS:
+        nested = mapping.get(key)
+        if isinstance(nested, dict):
+            nested_failures, nested_successes = _structured_signals(nested, depth + 1, agent)
+            failures += nested_failures
+            successes += nested_successes
+    for key in _RESULT_TEXT_KEYS:
+        failures += _output_failures(mapping.get(key), depth + 1)
     return failures, successes
 
 
@@ -859,16 +897,14 @@ def _split_text_envelope(text: str) -> tuple[str, str]:
     return "", text
 
 
-def _exit_code(mapping: dict[str, Any]) -> int | None:
-    """Read a structured exit code from an envelope or its ``metadata`` block."""
-    for key in ("exit_code", "exitCode", "returncode", "status_code"):
+def _exit_codes(mapping: dict[str, Any]) -> list[int]:
+    """Read every structured exit code field at this level of an envelope."""
+    codes: list[int] = []
+    for key in _EXIT_KEYS:
         value = mapping.get(key)
         if isinstance(value, int) and not isinstance(value, bool):
-            return value
-    metadata = mapping.get("metadata")
-    if isinstance(metadata, dict):
-        return _exit_code(metadata)
-    return None
+            codes.append(value)
+    return codes
 
 
 def _output_failures(output: Any, depth: int) -> int:
@@ -880,13 +916,13 @@ def _output_failures(output: Any, depth: int) -> int:
     if isinstance(output, list):
         return sum(_output_failures(item, depth + 1) for item in output)
     if isinstance(output, dict):
-        total = 0
-        code = _exit_code(output)
-        if code not in (None, 0):
+        total = sum(1 for code in _exit_codes(output) if code != 0)
+        if output.get("error") or output.get("is_error") is True or output.get("isError") is True:
             total += 1
-        if output.get("error"):
+        status = output.get("status")
+        if isinstance(status, str) and status.casefold() in _FAILURE_STATUSES:
             total += 1
-        for key in _RESULT_TEXT_KEYS:
+        for key in (*_STRUCTURED_KEYS, *_RESULT_TEXT_KEYS):
             total += _output_failures(output.get(key), depth + 1)
         return total
     return 0
@@ -947,8 +983,8 @@ def _walk(
     role = _role_of(node, role)
     call = _call_of(node)
     if call is not None:
-        if role in _USER_ROLES:
-            return found  # call-shaped objects in user or tool content are never actions
+        if role in _USER_ROLES or role == _ROLE_CONFLICT:
+            return found  # call-shaped objects in user or tool content, or under conflicting roles, are never actions
         name, parameters, call_id = call
         if is_shell_tool(name):
             command = _command_of(parameters)
@@ -1003,7 +1039,7 @@ def _command_outcome(
         entry = authoritative.get(call_id)
         if entry is None:
             return OUTCOME_UNCONFIRMED
-        if entry.command is None or entry.command != info.command:
+        if entry.command is None or canonical_command(entry.command) != canonical_command(info.command):
             return OUTCOME_CONFLICT
         if own == RESULT_ERROR:
             return OUTCOME_ERROR
@@ -1012,13 +1048,35 @@ def _command_outcome(
 
 
 def _role_of(node: dict[str, Any], inherited: str | None) -> str | None:
+    """Return the role governing a node: its own role, else the inherited one.
+
+    A node whose own role belongs to a different class (user side or assistant
+    side) than the inherited role is contradictory; it and everything under it
+    get the conflict role, which never records an action or a success.
+    """
+    own: str | None = None
     role = node.get("role")
     if isinstance(role, str):
-        return role.casefold()
-    record_type = node.get("type")
-    if isinstance(record_type, str) and record_type.casefold() in _ASSISTANT_ROLES | _USER_ROLES:
-        return record_type.casefold()
-    return inherited
+        own = role.casefold()
+    else:
+        record_type = node.get("type")
+        if isinstance(record_type, str) and record_type.casefold() in _ASSISTANT_ROLES | _USER_ROLES:
+            own = record_type.casefold()
+    if inherited == _ROLE_CONFLICT:
+        return _ROLE_CONFLICT
+    if own is not None and inherited is not None:
+        own_class, inherited_class = _role_class(own), _role_class(inherited)
+        if own_class and inherited_class and own_class != inherited_class:
+            return _ROLE_CONFLICT
+    return own if own is not None else inherited
+
+
+def _role_class(role: str) -> str | None:
+    if role in _USER_ROLES:
+        return "user"
+    if role in _ASSISTANT_ROLES:
+        return "assistant"
+    return None
 
 
 def _call_of(node: dict[str, Any]) -> tuple[str, Any, str | None] | None:

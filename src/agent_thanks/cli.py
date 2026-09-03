@@ -23,6 +23,7 @@ from .transcripts import (
     RESULT_UNKNOWN,
     is_shell_tool,
     HOOK_LOG_SCHEMA,
+    canonical_command,
     HOOK_PROMOTION_MATRIX,
     locate_transcript,
     result_status,
@@ -564,36 +565,42 @@ def _session_id(payload: dict[str, object]) -> str | None:
     return None
 
 
-def session_file_stem(session_id: str | None) -> str:
-    """Return the file stem for a session.
+def session_scope(payload: dict[str, object]) -> str | None:
+    """Return the scope a hook payload belongs to, or None when it has none.
 
-    Every real id becomes a sanitized prefix plus a hash of the original id, so
-    two ids can never share a file. A missing id uses the fixed stem
-    ``unscoped``, which no real id can produce because real stems always end in
-    a hash.
+    Every supported hook contract carries a session or thread identifier, which
+    scopes the log, the report, and the announcements. A payload without one is
+    scoped by its transcript path instead; without either it has no scope, so
+    nothing is recorded for it and nothing is announced.
     """
-    if session_id is None:
-        return "unscoped"
-    prefix = re.sub(r"[^A-Za-z0-9_.-]", "_", session_id)[:40].strip("._-") or "session"
-    return f"{prefix}-{hashlib.sha256(session_id.encode('utf-8')).hexdigest()[:16]}"
+    session_id = _session_id(payload)
+    if session_id is not None:
+        return f"id:{session_id}"
+    transcript = payload.get("transcript_path")
+    if isinstance(transcript, str) and transcript.strip():
+        return f"transcript:{transcript.strip()}"
+    return None
 
 
-def _session_log(state: Path, session_id: str | None) -> Path:
+def session_file_stem(scope: str) -> str:
+    """Return the file stem for a scope: a sanitized prefix plus a hash of the whole scope."""
+    label = scope.split(":", 1)[1] if ":" in scope else scope
+    prefix = re.sub(r"[^A-Za-z0-9_.-]", "_", label)[:40].strip("._-") or "session"
+    return f"{prefix}-{hashlib.sha256(scope.encode('utf-8')).hexdigest()[:16]}"
+
+
+def _session_log(state: Path, scope: str) -> Path:
     directory = state / "sessions"
     directory.mkdir(exist_ok=True)
-    return directory / f"{session_file_stem(session_id)}.jsonl"
+    return directory / f"{session_file_stem(scope)}.jsonl"
 
 
-def _report_path(state: Path, session_id: str | None) -> Path:
-    if session_id is None:
+def _report_path(state: Path, scope: str | None) -> Path:
+    if scope is None:
         return state / "report.json"
     directory = state / "reports"
     directory.mkdir(exist_ok=True)
-    return directory / f"{session_file_stem(session_id)}.json"
-
-
-def _announcement_key(session_id: str | None) -> str:
-    return "unscoped" if session_id is None else f"id:{session_id}"
+    return directory / f"{session_file_stem(scope)}.json"
 
 
 def _infer_agent(payload: dict[str, object]) -> str | None:
@@ -647,6 +654,9 @@ def _hook_record(payload: dict[str, object], *, agent: str | None) -> None:
     command = tool_input.get("command")
     if not isinstance(command, str) or not command.strip():
         return None
+    scope = session_scope(payload)
+    if scope is None:
+        return None  # nothing identifies the session, so the command cannot be attributed to one
     status, basis = _hook_outcome(payload, agent)
     entry = {
         "schema": HOOK_LOG_SCHEMA,
@@ -654,14 +664,15 @@ def _hook_record(payload: dict[str, object], *, agent: str | None) -> None:
         "event": event,
         "tool": tool_name,
         "session_id": _session_id(payload),
+        "scope": scope,
         "tool_call_id": payload.get("tool_use_id") or payload.get("tool_call_id"),
-        "command": command,
+        "command": canonical_command(command),
         "status": status,
         "basis": basis,
         "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     }
     state = _state_directory(_hook_root(payload))
-    log = _session_log(state, _session_id(payload))
+    log = _session_log(state, scope)
     with log.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
     return None
@@ -673,6 +684,7 @@ def _hook_stop(
     root = _hook_root(payload)
     state = _state_directory(root)
     session_id = _session_id(payload)
+    scope = session_scope(payload)
     _prune_state(state)
 
     # The structured hook log is the authority for actions: the scanner reads its
@@ -680,9 +692,10 @@ def _hook_stop(
     # calls and demotes whatever the two sources disagree about. The transcript
     # adds prose provenance; a command the hook log never saw stays unconfirmed.
     sources: list[Path] = []
-    log = _session_log(state, session_id)
-    if log.is_file():
-        sources.append(log)
+    if scope is not None:
+        log = _session_log(state, scope)
+        if log.is_file():
+            sources.append(log)
     transcript = payload.get("transcript_path")
     if isinstance(transcript, str) and Path(transcript).is_file():
         sources.append(Path(transcript))
@@ -697,14 +710,16 @@ def _hook_stop(
 
     resolver = PackageRepositoryResolver(offline=offline)
     report = ProjectScanner(root, base="HEAD", resolver=resolver).scan(sources)
-    report_path = _report_path(state, session_id)
+    report_path = _report_path(state, scope)
     report.write(report_path)
     latest = state / "report.json"
     if report_path != latest:
         report.write(latest)
 
+    if scope is None:
+        return None  # without a scope, announcements could not be kept apart per session
     announced = _load_announced(state / "announced.json")
-    key = _announcement_key(session_id)
+    key = scope
     seen = {item.casefold() for item in announced.get(key, [])}
     fresh = [
         candidate.repository
@@ -725,7 +740,7 @@ def _load_announced(path: Path) -> dict[str, list[str]]:
         return {}
     loaded = json.loads(path.read_text(encoding="utf-8"))
     if isinstance(loaded, list):
-        return {"unscoped": [str(item) for item in loaded]}
+        return {"legacy": [str(item) for item in loaded]}
     if isinstance(loaded, dict):
         return {
             str(key): [str(item) for item in value]
