@@ -9,6 +9,7 @@ from .transcripts import locate_transcript
 
 
 AGENTS = ("claude-code", "codex", "gemini")
+PROJECT_URL = "https://github.com/dbwls99706/agent-thanks"
 
 
 def _repo_from_args(args: list[str]) -> Path:
@@ -104,6 +105,11 @@ repository, and a final confirmation.
 """
 
 
+def _print_project_star_cta() -> None:
+    print("\nLike the idea? agent-thanks is open source too.")
+    print(f"Star agent-thanks: {PROJECT_URL}")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
 
@@ -111,7 +117,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(_quick_help(), end="")
         return 0
 
-    if args[0] in {"thanks", "thank"}:
+    command = args[0]
+    show_project_cta = command == "demo" or (
+        command in {"thanks", "thank"} and "--dry-run" in args[1:]
+    )
+
+    if command in {"thanks", "thank"}:
         if any(argument in {"-h", "--help"} for argument in args[1:]):
             print(_thanks_help(), end="")
             return 0
@@ -128,7 +139,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     file=sys.stderr,
                 )
 
-    return cli_main(args)
+    status = cli_main(args)
+    if status == 0 and show_project_cta:
+        _print_project_star_cta()
+    return status
 
 
 if __name__ == "__main__":
