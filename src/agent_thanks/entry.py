@@ -33,7 +33,13 @@ def _detect_agent(root: Path) -> str | None:
     project = root.expanduser().resolve()
     matches: list[tuple[int, int, str]] = []
     for priority, agent in enumerate(AGENTS):
-        transcript = locate_transcript(agent, project, Path.home())
+        try:
+            transcript = locate_transcript(agent, project, Path.home())
+        except OSError:
+            # One unreadable agent home must not hide a valid transcript from
+            # another supported agent. A candidate is still accepted only when
+            # locate_transcript proves that it belongs to this exact project.
+            continue
         if transcript is None:
             continue
         try:

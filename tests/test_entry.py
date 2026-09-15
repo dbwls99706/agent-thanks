@@ -98,6 +98,22 @@ class EntryPointTests(unittest.TestCase):
             ):
                 self.assertEqual(_detect_agent(root), "codex")
 
+    def test_detect_agent_skips_an_unreadable_agent_home(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            codex = root / "codex.jsonl"
+            codex.write_text("{}\n", encoding="utf-8")
+
+            def locate(agent, project, home):
+                if agent == "claude-code":
+                    raise PermissionError("unreadable")
+                if agent == "codex":
+                    return codex
+                return None
+
+            with patch("agent_thanks.entry.locate_transcript", side_effect=locate):
+                self.assertEqual(_detect_agent(root), "codex")
+
     @patch("agent_thanks.entry.cli_main", return_value=7)
     @patch("agent_thanks.entry._detect_agent")
     def test_run_remains_a_compatibility_command(self, detect, cli_main) -> None:
