@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "agent-thanks",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Find open-source repositories used during a coding session and surface verified candidates so a person can thank them with GitHub Stars. Stars always require interactive human approval.",
   "author": {
     "name": "dbwls99706"
