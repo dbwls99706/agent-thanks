@@ -5,12 +5,21 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agent-thanks"
 version = "0.5.1"
-description = "Detect and thank open-source repositories meaningfully used during an AI coding session."
+description = "Evidence-first open-source provenance for AI coding sessions."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [{ name = "Yujin Hong" }]
-keywords = ["ai-agents", "github", "open-source", "attribution", "cli"]
+keywords = [
+  "ai-agents",
+  "coding-agents",
+  "github",
+  "open-source",
+  "provenance",
+  "attribution",
+  "developer-tools",
+  "software-supply-chain",
+]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
