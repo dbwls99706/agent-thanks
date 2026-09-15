@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from agent_thanks.entry import _detect_agent, main
+from agent_thanks.entry import PROJECT_URL, _detect_agent, main
 
 
 class EntryPointTests(unittest.TestCase):
@@ -14,7 +14,7 @@ class EntryPointTests(unittest.TestCase):
     @patch("agent_thanks.entry._detect_agent", return_value="codex")
     def test_thanks_auto_detects_the_agent_for_the_project(self, detect, cli_main) -> None:
         error = StringIO()
-        with redirect_stderr(error):
+        with redirect_stderr(error), redirect_stdout(StringIO()):
             status = main(["thanks", "--repo", "/work/project", "--dry-run"])
 
         self.assertEqual(status, 0)
@@ -34,7 +34,8 @@ class EntryPointTests(unittest.TestCase):
     @patch("agent_thanks.entry.cli_main", return_value=0)
     @patch("agent_thanks.entry._detect_agent")
     def test_explicit_agent_is_never_replaced(self, detect, cli_main) -> None:
-        status = main(["thanks", "--from", "claude-code", "--dry-run"])
+        with redirect_stdout(StringIO()):
+            status = main(["thanks", "--from", "claude-code", "--dry-run"])
 
         self.assertEqual(status, 0)
         detect.assert_not_called()
@@ -45,7 +46,8 @@ class EntryPointTests(unittest.TestCase):
     @patch("agent_thanks.entry.cli_main", return_value=0)
     @patch("agent_thanks.entry._detect_agent")
     def test_explicit_session_is_never_replaced(self, detect, cli_main) -> None:
-        status = main(["thanks", "--session", "session.jsonl", "--dry-run"])
+        with redirect_stdout(StringIO()):
+            status = main(["thanks", "--session", "session.jsonl", "--dry-run"])
 
         self.assertEqual(status, 0)
         detect.assert_not_called()
@@ -56,7 +58,8 @@ class EntryPointTests(unittest.TestCase):
     @patch("agent_thanks.entry.cli_main", return_value=0)
     @patch("agent_thanks.entry._detect_agent")
     def test_equals_style_session_is_never_replaced(self, detect, cli_main) -> None:
-        status = main(["thanks", "--session=session.jsonl", "--dry-run"])
+        with redirect_stdout(StringIO()):
+            status = main(["thanks", "--session=session.jsonl", "--dry-run"])
 
         self.assertEqual(status, 0)
         detect.assert_not_called()
@@ -68,7 +71,7 @@ class EntryPointTests(unittest.TestCase):
     @patch("agent_thanks.entry._detect_agent", return_value=None)
     def test_thanks_falls_back_to_project_changes(self, detect, cli_main) -> None:
         error = StringIO()
-        with redirect_stderr(error):
+        with redirect_stderr(error), redirect_stdout(StringIO()):
             status = main(["thanks", "--dry-run"])
 
         self.assertEqual(status, 0)
@@ -156,6 +159,57 @@ class EntryPointTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertIn("Everyday use", output.getvalue())
         cli_main.assert_not_called()
+
+    @patch("agent_thanks.entry.cli_main", return_value=0)
+    def test_demo_ends_with_an_explicit_project_star_invitation(self, cli_main) -> None:
+        output = StringIO()
+        with redirect_stdout(output):
+            status = main(["demo"])
+
+        rendered = output.getvalue()
+        self.assertEqual(status, 0)
+        self.assertIn("Like the idea? agent-thanks is open source too.", rendered)
+        self.assertIn(f"Star agent-thanks: {PROJECT_URL}", rendered)
+        self.assertNotIn(f"Would star: {PROJECT_URL}", rendered)
+        cli_main.assert_called_once_with(["demo"])
+
+    @patch("agent_thanks.entry.cli_main", return_value=0)
+    @patch("agent_thanks.entry._detect_agent", return_value=None)
+    def test_thanks_dry_run_ends_with_the_same_project_star_invitation(
+        self, detect, cli_main
+    ) -> None:
+        output = StringIO()
+        with redirect_stdout(output), redirect_stderr(StringIO()):
+            status = main(["thanks", "--dry-run"])
+
+        rendered = output.getvalue()
+        self.assertEqual(status, 0)
+        self.assertIn(f"Star agent-thanks: {PROJECT_URL}", rendered)
+        self.assertNotIn(f"Would star: {PROJECT_URL}", rendered)
+        detect.assert_called_once()
+        cli_main.assert_called_once_with(["run", "--dry-run"])
+
+    @patch("agent_thanks.entry.cli_main", return_value=0)
+    @patch("agent_thanks.entry._detect_agent", return_value=None)
+    def test_live_thanks_does_not_self_promote(self, detect, cli_main) -> None:
+        output = StringIO()
+        with redirect_stdout(output), redirect_stderr(StringIO()):
+            status = main(["thanks"])
+
+        self.assertEqual(status, 0)
+        self.assertNotIn(PROJECT_URL, output.getvalue())
+        detect.assert_called_once()
+        cli_main.assert_called_once_with(["run"])
+
+    @patch("agent_thanks.entry.cli_main", return_value=2)
+    def test_failed_demo_does_not_print_the_project_star_invitation(self, cli_main) -> None:
+        output = StringIO()
+        with redirect_stdout(output):
+            status = main(["demo"])
+
+        self.assertEqual(status, 2)
+        self.assertNotIn(PROJECT_URL, output.getvalue())
+        cli_main.assert_called_once_with(["demo"])
 
 
 if __name__ == "__main__":
