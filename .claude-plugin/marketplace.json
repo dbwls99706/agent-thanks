@@ -5,16 +5,16 @@
     "name": "dbwls99706"
   },
   "metadata": {
-    "description": "Detection-only hooks that surface open-source repositories used during a coding session so a person can thank them."
+    "description": "Find open-source repositories used during coding-agent sessions and surface verified candidates for human-approved GitHub Stars."
   },
   "plugins": [
     {
       "name": "agent-thanks",
       "source": "./plugins/agent-thanks",
-      "description": "Record the shell commands an agent runs and, after each completed turn, announce repositories with verified open-source use. Stars still require the interactive agent-thanks star command.",
-      "version": "0.5.1",
+      "description": "Record coding-agent activity, verify open-source use, and help people thank the repositories their agent relied on. Every Star remains an explicit interactive human action.",
+      "version": "0.6.0",
       "category": "productivity",
-      "keywords": ["open-source", "attribution", "github", "stars"]
+      "keywords": ["open-source", "stars", "coding-agents", "attribution", "provenance", "github"]
     }
   ]
 }

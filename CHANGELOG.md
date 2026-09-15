@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.6.0 - 2026-09-15
+
+- Make `agent-thanks thanks` the primary user workflow. With no explicit
+  `--from` or `--session`, it selects the newest Claude Code, Codex, or Gemini
+  transcript that the existing transcript locator can prove belongs to the
+  current project, then combines that evidence with project changes before the
+  normal interactive Star review. If no matching transcript exists, it scans
+  project changes only instead of guessing.
+- Reframe the product around its intended outcome: find open-source repositories
+  a coding agent actually used and help a person thank verified repositories
+  with GitHub Stars. Provenance and evidence remain the conservative safety
+  layer behind the Star prompt, not the end product.
+- Add a dedicated top-level and `thanks` help experience while keeping `run` as
+  a lower-level compatibility command.
+- Verify the new entry point across Python 3.10 through 3.14, Windows, macOS,
+  built wheels, source distributions, and an installed `thanks --dry-run`
+  smoke flow before release.
+
 ## 0.5.1 - 2026-09-03
 
 - Treat a project directory the platform cannot resolve as identifying nothing.
