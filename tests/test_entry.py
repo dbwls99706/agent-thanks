@@ -1,10 +1,12 @@
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
+import os
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
-from agent_thanks.entry import main
+from agent_thanks.entry import _detect_agent, main
 
 
 class EntryPointTests(unittest.TestCase):
@@ -52,6 +54,17 @@ class EntryPointTests(unittest.TestCase):
         )
 
     @patch("agent_thanks.entry.cli_main", return_value=0)
+    @patch("agent_thanks.entry._detect_agent")
+    def test_equals_style_session_is_never_replaced(self, detect, cli_main) -> None:
+        status = main(["thanks", "--session=session.jsonl", "--dry-run"])
+
+        self.assertEqual(status, 0)
+        detect.assert_not_called()
+        cli_main.assert_called_once_with(
+            ["run", "--session=session.jsonl", "--dry-run"]
+        )
+
+    @patch("agent_thanks.entry.cli_main", return_value=0)
     @patch("agent_thanks.entry._detect_agent", return_value=None)
     def test_thanks_falls_back_to_project_changes(self, detect, cli_main) -> None:
         error = StringIO()
@@ -62,6 +75,28 @@ class EntryPointTests(unittest.TestCase):
         detect.assert_called_once()
         cli_main.assert_called_once_with(["run", "--dry-run"])
         self.assertIn("scanning project changes only", error.getvalue())
+
+    def test_detect_agent_prefers_the_newest_matching_transcript(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            claude = root / "claude.jsonl"
+            codex = root / "codex.jsonl"
+            claude.write_text("{}\n", encoding="utf-8")
+            codex.write_text("{}\n", encoding="utf-8")
+            os.utime(claude, ns=(1_000_000_000, 1_000_000_000))
+            os.utime(codex, ns=(2_000_000_000, 2_000_000_000))
+
+            found = {
+                "claude-code": claude,
+                "codex": codex,
+                "gemini": None,
+            }
+
+            with patch(
+                "agent_thanks.entry.locate_transcript",
+                side_effect=lambda agent, project, home: found[agent],
+            ):
+                self.assertEqual(_detect_agent(root), "codex")
 
     @patch("agent_thanks.entry.cli_main", return_value=7)
     @patch("agent_thanks.entry._detect_agent")
@@ -81,6 +116,19 @@ class EntryPointTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertIn("agent-thanks thanks", output.getvalue())
         self.assertIn("approve Stars", output.getvalue())
+        cli_main.assert_not_called()
+
+    @patch("agent_thanks.entry.cli_main")
+    @patch("agent_thanks.entry._detect_agent")
+    def test_thanks_help_has_no_detection_side_effects(self, detect, cli_main) -> None:
+        output = StringIO()
+        with redirect_stdout(output):
+            status = main(["thanks", "--help"])
+
+        self.assertEqual(status, 0)
+        self.assertIn("usage: agent-thanks thanks", output.getvalue())
+        self.assertIn("--from AGENT", output.getvalue())
+        detect.assert_not_called()
         cli_main.assert_not_called()
 
     @patch("agent_thanks.entry.cli_main")

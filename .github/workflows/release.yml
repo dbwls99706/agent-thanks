@@ -30,10 +30,16 @@ jobs:
           python -m venv sdist-smoke
           sdist-smoke/bin/python -m pip install dist/*.tar.gz
           sdist-smoke/bin/agent-thanks --version
+          sdist-smoke/bin/agent-thanks --help
+          sdist-smoke/bin/agent-thanks thanks --help
           sdist-smoke/bin/agent-thanks demo
+          sdist-smoke/bin/agent-thanks thanks --repo . --offline --dry-run --output sdist-thanks-report.json
           python -m pip install --no-index --find-links dist agent-thanks
           agent-thanks --version
+          agent-thanks --help
+          agent-thanks thanks --help
           agent-thanks demo
+          agent-thanks thanks --repo . --offline --dry-run --output wheel-thanks-report.json
           tagged="${GITHUB_REF_NAME#v}"
           packaged="$(agent-thanks --version | awk '{print $2}')"
           if [ "$tagged" != "$packaged" ]; then

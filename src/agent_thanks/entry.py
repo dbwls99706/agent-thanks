@@ -73,6 +73,31 @@ Run 'agent-thanks <command> --help' for command-specific options.
 """
 
 
+def _thanks_help() -> str:
+    return """usage: agent-thanks thanks [options]
+
+Find open-source repositories used during the current coding task, show the
+evidence, and ask before each eligible GitHub Star.
+
+By default, agent-thanks auto-detects the newest Claude Code, Codex, or Gemini
+transcript that belongs to the selected project.
+
+options:
+  --repo PATH             Project root (default: current directory)
+  --base REVISION         State before the agent worked (default: HEAD)
+  --from AGENT            Use claude-code, codex, or gemini explicitly
+  --session PATH          Use a transcript or log explicitly; repeatable
+  --output PATH           JSON report path (default: .agent-thanks-report.json)
+  --offline               Skip package-registry lookups
+  --trust-session         Trust commands from plain-text logs as successful
+  --dry-run               Show which verified repositories would be offered
+  -h, --help              Show this help
+
+Live Stars always require an interactive terminal, one default-No decision per
+repository, and a final confirmation.
+"""
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
 
@@ -81,6 +106,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args[0] in {"thanks", "thank"}:
+        if any(argument in {"-h", "--help"} for argument in args[1:]):
+            print(_thanks_help(), end="")
+            return 0
+
         args[0] = "run"
         if not _has_explicit_session_source(args):
             agent = _detect_agent(_repo_from_args(args))
