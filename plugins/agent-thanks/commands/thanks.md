@@ -1,16 +1,25 @@
 ---
-description: Show the open-source repositories verified in this session and how to thank them
+description: Show the open-source repositories verified in this session and how to thank them with Stars
 allowed-tools: Bash(agent-thanks review:*)
 ---
 
-Run `agent-thanks review .agent-thanks/report.json` (the latest result; each
-session also has its own file under `.agent-thanks/reports/`) and show the user
-every candidate with its evidence, keeping the `verified` and `review` markers.
+Run `agent-thanks review .agent-thanks/report.json` and show every candidate with
+its evidence, preserving the `verified` and `review` markers.
 
-Explain that approving a Star requires an interactive terminal outside this
-session: `agent-thanks star .agent-thanks/report.json`. Each repository gets its
-own default-No prompt there. Never try to star, unstar, or authenticate from here.
+The purpose of agent-thanks is to help the user notice open-source repositories
+this coding task actually relied on and thank verified ones with a GitHub Star.
+Explain that the evidence check protects that Star from becoming a noisy or
+automated signal.
 
-If the report does not exist yet, say that the hook writes it after the first
-completed turn that runs shell commands, and suggest
-`agent-thanks run --from claude-code --dry-run`.
+A Star must still be approved in an interactive terminal outside this session:
+
+`agent-thanks star .agent-thanks/report.json`
+
+Each eligible repository gets its own default-No prompt and a final confirmation.
+Never try to star, unstar, authenticate, or bypass the interactive approval from
+inside the agent session.
+
+If the report does not exist yet, explain that the hook normally writes it after
+a completed turn that ran shell commands. For a manual preview, suggest:
+
+`agent-thanks thanks --from claude-code --dry-run`

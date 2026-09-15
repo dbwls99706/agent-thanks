@@ -5,16 +5,16 @@
     "name": "dbwls99706"
   },
   "metadata": {
-    "description": "Evidence-first open-source provenance for coding-agent sessions. Detect verified use locally; keep Stars human-approved."
+    "description": "Find open-source repositories used during coding-agent sessions and surface verified candidates for human-approved GitHub Stars."
   },
   "plugins": [
     {
       "name": "agent-thanks",
       "source": "./plugins/agent-thanks",
-      "description": "Record coding-agent activity and surface verified open-source use with reviewable evidence. Stars remain an explicit interactive human action.",
+      "description": "Record coding-agent activity, verify open-source use, and help people thank the repositories their agent relied on. Every Star remains an explicit interactive human action.",
       "version": "0.5.1",
       "category": "productivity",
-      "keywords": ["open-source", "provenance", "attribution", "coding-agents", "github"]
+      "keywords": ["open-source", "stars", "coding-agents", "attribution", "provenance", "github"]
     }
   ]
 }

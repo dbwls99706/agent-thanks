@@ -2,12 +2,12 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "agent-thanks",
   "version": "0.5.1",
-  "description": "Evidence-first open-source provenance for Claude Code sessions. Records supported shell activity, surfaces verified repository use, and keeps GitHub Stars human-approved.",
+  "description": "Find open-source repositories used during a coding session and surface verified candidates so a person can thank them with GitHub Stars. Stars always require interactive human approval.",
   "author": {
     "name": "dbwls99706"
   },
   "homepage": "https://github.com/dbwls99706/agent-thanks",
   "repository": "https://github.com/dbwls99706/agent-thanks",
   "license": "MIT",
-  "keywords": ["open-source", "provenance", "attribution", "coding-agents", "github"]
+  "keywords": ["open-source", "stars", "coding-agents", "attribution", "provenance", "github"]
 }

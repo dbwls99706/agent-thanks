@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agent-thanks"
 version = "0.5.1"
-description = "Evidence-first open-source provenance for AI coding sessions."
+description = "Find open-source repositories used by coding agents and thank them with human-approved GitHub Stars."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -14,11 +14,12 @@ keywords = [
   "ai-agents",
   "coding-agents",
   "github",
+  "github-stars",
   "open-source",
+  "open-source-sustainability",
   "provenance",
   "attribution",
   "developer-tools",
-  "software-supply-chain",
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -43,7 +44,7 @@ Issues = "https://github.com/dbwls99706/agent-thanks/issues"
 Source = "https://github.com/dbwls99706/agent-thanks"
 
 [project.scripts]
-agent-thanks = "agent_thanks.cli:main"
+agent-thanks = "agent_thanks.entry:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
