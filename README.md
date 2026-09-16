@@ -15,15 +15,29 @@ The evidence engine is the safety layer. **The product goal is simple: make it e
   <img src="https://raw.githubusercontent.com/dbwls99706/agent-thanks/main/docs/assets/agent-thanks-banner.svg" alt="AI: done in 12 seconds. Open source: 12 years in the making. Leave a star." width="900">
 </p>
 
-## One command after the coding task
+## Install
 
-Authenticate to GitHub once:
+Recommended with `pipx`:
+
+```bash
+pipx install agent-thanks
+```
+
+Without `pipx`:
+
+```bash
+python -m pip install agent-thanks
+```
+
+Then authenticate to GitHub once:
 
 ```bash
 gh auth login
 ```
 
-Then, after an AI coding session:
+## One command after the coding task
+
+After an AI coding session:
 
 ```bash
 agent-thanks thanks
@@ -67,16 +81,10 @@ No unattended Star mode exists. A Star always requires an interactive terminal a
 
 ## Try it safely in 30 seconds
 
-Install from GitHub:
+Install from PyPI:
 
 ```bash
-pipx install git+https://github.com/dbwls99706/agent-thanks.git
-```
-
-Without `pipx`:
-
-```bash
-python -m pip install "https://github.com/dbwls99706/agent-thanks/archive/refs/heads/main.zip"
+pipx install agent-thanks
 ```
 
 Then run the built-in demo:
