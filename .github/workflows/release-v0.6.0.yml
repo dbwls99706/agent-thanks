@@ -1,0 +1,67 @@
+name: release-v0.6.0
+
+on:
+  push:
+    branches:
+      - product/provenance-first
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.event.head_commit.message == 'chore: release v0.6.0'
+    runs-on: ubuntu-latest
+    env:
+      TAG: v0.6.0
+      TARGET_SHA: 0d6d55040f0c7c74b72ed37d9ea6920b6b6b8c95
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TARGET_SHA }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - run: python -m pip install build
+      - run: python -m build
+      - name: Verify distributions
+        run: |
+          set -eu
+          tar tzf dist/*.tar.gz > sdist-contents.txt
+          if ! grep -q 'examples/session\.jsonl$' sdist-contents.txt; then
+            echo "error: the source distribution ships no examples/session.jsonl"
+            cat sdist-contents.txt
+            exit 1
+          fi
+          python -m venv sdist-smoke
+          sdist-smoke/bin/python -m pip install dist/*.tar.gz
+          sdist-smoke/bin/agent-thanks --version
+          sdist-smoke/bin/agent-thanks --help
+          sdist-smoke/bin/agent-thanks thanks --help
+          sdist-smoke/bin/agent-thanks demo
+          sdist-smoke/bin/agent-thanks thanks --repo . --offline --dry-run --output sdist-thanks-report.json
+          python -m pip install --no-index --find-links dist agent-thanks
+          agent-thanks --version
+          agent-thanks --help
+          agent-thanks thanks --help
+          agent-thanks demo
+          agent-thanks thanks --repo . --offline --dry-run --output wheel-thanks-report.json
+          packaged="$(agent-thanks --version | awk '{print $2}')"
+          if [ "${TAG#v}" != "$packaged" ]; then
+            echo "error: tag $TAG does not match packaged version $packaged"
+            exit 1
+          fi
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum *.whl *.tar.gz > SHA256SUMS
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "error: release $TAG already exists"
+            exit 1
+          fi
+          gh release create "$TAG" dist/* --target "$TARGET_SHA" --generate-notes --title "$TAG"
