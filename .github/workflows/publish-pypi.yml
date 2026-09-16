@@ -1,0 +1,58 @@
+name: publish-pypi
+
+on:
+  push:
+    branches:
+      - release/pypi-v0.6.0
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: v0.6.0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - run: python -m pip install build
+      - run: python -m build
+      - name: Verify packaged version
+        run: |
+          set -eu
+          python -m venv smoke
+          smoke/bin/python -m pip install --no-index --find-links dist agent-thanks
+          packaged="$(smoke/bin/agent-thanks --version | awk '{print $2}')"
+          if [ "$packaged" != "0.6.0" ]; then
+            echo "error: expected 0.6.0, got $packaged"
+            exit 1
+          fi
+          smoke/bin/agent-thanks demo >/dev/null
+          smoke/bin/agent-thanks thanks --repo . --offline --dry-run --output smoke-report.json >/dev/null
+      - name: Upload distributions
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pypi-dist-v0.6.0
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/agent-thanks
+    permissions:
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: pypi-dist-v0.6.0
+          path: dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
