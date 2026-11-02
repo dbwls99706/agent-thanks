@@ -748,9 +748,13 @@ def _first_string(mapping: dict[str, Any], keys: Iterable[str]) -> str | None:
 
 
 def _head_records(path: Path, *, limit: int) -> list[Any]:
+    is_document = path.suffix.casefold() == ".json"
     try:
         with path.open("r", encoding="utf-8", errors="replace") as handle:
-            head = handle.read(262144)
+            # Gemini stores a whole session in one JSON document. A bounded
+            # prefix becomes invalid JSON as that session grows, even when its
+            # project metadata appears at the very beginning of the file.
+            head = handle.read() if is_document else handle.read(262144)
     except OSError:
         return []
     stripped = head.lstrip("\ufeff \t\r\n")
@@ -762,6 +766,10 @@ def _head_records(path: Path, *, limit: int) -> list[Any]:
         return [document]
     if isinstance(document, list):
         return document[:limit]
+    if is_document:
+        # A broken JSON document must not become JSON Lines: an inner message
+        # could otherwise be mistaken for the session's own project metadata.
+        return []
     records: list[Any] = []
     for line in head.splitlines():
         line = line.strip()

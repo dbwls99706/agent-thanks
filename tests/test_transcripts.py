@@ -936,6 +936,47 @@ class UnresolvablePathTests(unittest.TestCase):
 
 
 class TranscriptLocationTests(unittest.TestCase):
+    def test_large_gemini_documents_keep_exact_project_and_session_matching(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            cwd = home / "project"
+            sessions = home / ".gemini" / "tmp" / "hash" / "chats"
+            sessions.mkdir(parents=True)
+            path = sessions / "session.json"
+            for indent in (None, 2):
+                with self.subTest(indent=indent):
+                    path.write_text(json.dumps({
+                        "sessionId": "large-session",
+                        "projectRoot": str(cwd),
+                        "messages": [{"role": "model", "content": "x" * 300000}],
+                    }, indent=indent), encoding="utf-8")
+                    self.assertEqual(transcript_metadata(path).cwd, str(cwd))
+                    self.assertEqual(
+                        locate_transcript("gemini", cwd, home, {}, session_id="large-session"), path
+                    )
+                    self.assertIsNone(locate_transcript("gemini", home / "other", home, {}))
+                    self.assertIsNone(
+                        locate_transcript("gemini", cwd, home, {}, session_id="other-session")
+                    )
+
+    def test_large_malformed_gemini_document_cannot_supply_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            sessions = home / ".gemini" / "tmp" / "hash" / "chats"
+            sessions.mkdir(parents=True)
+            path = sessions / "session.json"
+            document = json.dumps({"cwd": str(home / "project"), "messages": ["x" * 300000]})
+            nested_message = (
+                '{"padding": "' + "x" * 300000 + '", "messages": [\n'
+                + json.dumps({"cwd": str(home / "project"), "sessionId": "nested"})
+                + "\n]"
+            )
+            for invalid in (document[:-1], document[:-1] + ', "cwd": "/different"}', nested_message):
+                with self.subTest(ending=invalid[-30:]):
+                    path.write_text(invalid, encoding="utf-8")
+                    self.assertIsNone(transcript_metadata(path).cwd)
+                    self.assertIsNone(locate_transcript("gemini", home / "project", home, {}))
+
     def test_project_path_encoding_matches_agent_layout(self) -> None:
         self.assertEqual(encode_project_path("/home/user/agent-thanks"), "-home-user-agent-thanks")
         self.assertEqual(encode_project_path(r"C:\Users\me\proj"), "C--Users-me-proj")

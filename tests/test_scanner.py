@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -14,6 +15,92 @@ def git(root: Path, *args: str) -> None:
 
 
 class ScannerTests(unittest.TestCase):
+    def test_untracked_manifests_preserve_unicode_and_control_characters(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git(root, "init")
+            git(root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                "commit", "--allow-empty", "-m", "base")
+            folders = ["한글 프로젝트"]
+            if os.name != "nt":
+                folders.extend(["tab\tfolder", "line\nfolder"])
+            for index, folder in enumerate(folders):
+                manifest = root / folder / "requirements.txt"
+                manifest.parent.mkdir()
+                manifest.write_text(
+                    f"demo{index} @ git+https://github.com/used/repo{index}.git\n",
+                    encoding="utf-8",
+                )
+
+            report = ProjectScanner(root, resolver=PackageRepositoryResolver(offline=True)).scan()
+
+            self.assertEqual(
+                {candidate.repository for candidate in report.candidates},
+                {f"used/repo{index}" for index in range(len(folders))},
+            )
+            self.assertTrue(all(candidate.recommended for candidate in report.candidates))
+
+    def test_tracked_manifests_preserve_paths_and_exclude_baseline_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git(root, "init")
+            folders = ["한글 프로젝트"]
+            if os.name != "nt":
+                folders.extend(["tab\tfolder", "line\nfolder"])
+            for folder in folders:
+                manifest = root / folder / "requirements.txt"
+                manifest.parent.mkdir()
+                manifest.write_text("base @ git+https://github.com/existing/base.git\n", encoding="utf-8")
+            git(root, "add", ".")
+            git(root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                "commit", "-m", "base")
+            for index, folder in enumerate(folders):
+                manifest = root / folder / "requirements.txt"
+                manifest.write_text(
+                    manifest.read_text(encoding="utf-8")
+                    + f"demo{index} @ git+https://github.com/used/repo{index}.git\n",
+                    encoding="utf-8",
+                )
+
+            report = ProjectScanner(root, resolver=PackageRepositoryResolver(offline=True)).scan()
+
+            self.assertEqual(
+                {candidate.repository for candidate in report.candidates},
+                {f"used/repo{index}" for index in range(len(folders))},
+            )
+            self.assertEqual(
+                {item.source for candidate in report.candidates for item in candidate.evidence},
+                {f"{folder}/requirements.txt" for folder in folders},
+            )
+
+    def test_renamed_unicode_manifest_only_counts_new_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git(root, "init")
+            manifest = root / "이전 폴더" / "requirements.txt"
+            manifest.parent.mkdir()
+            manifest.write_text(
+                "".join(f"base{i} @ git+https://github.com/existing/base{i}.git\n" for i in range(4)),
+                encoding="utf-8",
+            )
+            git(root, "add", ".")
+            git(root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                "commit", "-m", "base")
+            moved = root / "새 폴더" / "requirements.txt"
+            moved.parent.mkdir()
+            git(root, "mv", "이전 폴더/requirements.txt", "새 폴더/requirements.txt")
+            scanner = ProjectScanner(root, resolver=PackageRepositoryResolver(offline=True))
+            self.assertEqual(scanner.scan().candidates, [])
+            moved.write_text(
+                moved.read_text(encoding="utf-8") + "added @ git+https://github.com/used/added.git\n",
+                encoding="utf-8",
+            )
+
+            report = scanner.scan()
+
+            self.assertEqual([candidate.repository for candidate in report.candidates], ["used/added"])
+            self.assertEqual(report.candidates[0].evidence[0].source, "새 폴더/requirements.txt")
+
     def session_evidence(self, text: str, *, trusted: bool = True) -> dict[str, Evidence]:
         return {
             repository: evidence

@@ -202,8 +202,8 @@ class ProjectScanner:
 
         identities: set[tuple[str, str, str]] = set()
         paths = self._git(
-            "ls-tree", "-r", "--name-only", self.base, "--"
-        ).stdout.splitlines()
+            "ls-tree", "-r", "--name-only", "-z", self.base, "--"
+        ).stdout.split("\0")
         for path in paths:
             relative = PurePosixPath(path).as_posix()
             if not is_supported_manifest(relative):
@@ -238,27 +238,29 @@ class ProjectScanner:
         changed = self._git(
             "diff",
             "--name-status",
+            "-z",
             "--find-renames",
             "--diff-filter=ACMR",
             self.base,
             "--",
-        ).stdout.splitlines()
+        ).stdout.split("\0")
         untracked = self._git(
-            "ls-files", "--others", "--exclude-standard"
-        ).stdout.splitlines()
+            "ls-files", "--others", "--exclude-standard", "-z"
+        ).stdout.split("\0")
 
         paths: dict[str, str | None] = {}
-        for change in changed:
-            fields = change.split("\t")
-            status = fields[0]
-            if status.startswith(("R", "C")) and len(fields) >= 3:
-                before_path = PurePosixPath(fields[1]).as_posix()
-                relative = PurePosixPath(fields[2]).as_posix()
-            elif len(fields) >= 2:
-                relative = PurePosixPath(fields[1]).as_posix()
-                before_path = None if status.startswith("A") else relative
-            else:
+        # NUL separators preserve Unicode and literal tabs/newlines in paths;
+        # Git's default text output quotes those names instead of returning them.
+        changes = iter(changed)
+        for status in changes:
+            if not status:
                 continue
+            relative = next(changes)
+            if status.startswith(("R", "C")):
+                before_path = relative
+                relative = next(changes)
+            else:
+                before_path = None if status.startswith("A") else relative
             if is_supported_manifest(relative):
                 paths[relative] = before_path
 

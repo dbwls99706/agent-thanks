@@ -1,5 +1,6 @@
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -7,6 +8,92 @@ import unittest
 from unittest.mock import patch
 
 from agent_thanks.entry import PROJECT_URL, _detect_agent, main
+from agent_thanks.models import Report
+
+
+class ThanksWorkflowTests(unittest.TestCase):
+    @patch("agent_thanks.cli.GitHubClient")
+    def test_manual_cli_log_requires_attestation_before_star_approval(self, client_type) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = root / "terminal.log"
+            session.write_text(
+                "git clone https://github.com/used/manual.git\n"
+                "See https://github.com/reference/only for background.\n",
+                encoding="utf-8",
+            )
+            report_path = root / "report.json"
+            arguments = [
+                "thanks", "--repo", str(root), "--session", str(session),
+                "--offline", "--output", str(report_path),
+            ]
+            preview = StringIO()
+            with redirect_stdout(preview), redirect_stderr(StringIO()), patch("builtins.input") as ask:
+                self.assertEqual(main([*arguments, "--dry-run"]), 0)
+            self.assertNotIn("Would star:", preview.getvalue())
+            self.assertFalse(any(candidate.recommended for candidate in Report.read(report_path).candidates))
+            ask.assert_not_called()
+            client_type.assert_not_called()
+
+            client = client_type.return_value
+            client.whoami.return_value = "octocat"
+            client.is_starred.return_value = False
+            output = StringIO()
+            with patch("agent_thanks.cli._require_interactive_terminal"), patch(
+                "builtins.input", side_effect=["y", "y"]
+            ) as ask, redirect_stdout(output), redirect_stderr(StringIO()):
+                self.assertEqual(main([*arguments, "--trust-session"]), 0)
+
+            client.star.assert_called_once_with("used/manual")
+            self.assertEqual(ask.call_count, 2)
+            self.assertIn("GitHub account: @octocat", output.getvalue())
+            self.assertIn("Starred: https://github.com/used/manual", output.getvalue())
+            self.assertNotIn("Starred: https://github.com/reference/only", output.getvalue())
+
+    @patch("agent_thanks.cli.GitHubClient")
+    def test_auto_detected_codex_session_only_offers_successful_repository_use(self, client_type) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            root = home / "project"
+            root.mkdir()
+            sessions = home / ".codex" / "sessions"
+            sessions.mkdir(parents=True)
+            transcript = sessions / "session.jsonl"
+            records = [{"type": "session_meta", "payload": {"id": "task", "cwd": str(root)}}]
+            for name, exit_code in (("success", 0), ("failure", 128)):
+                records.extend([
+                    {"type": "response_item", "payload": {
+                        "type": "function_call", "name": "exec_command", "call_id": name,
+                        "arguments": json.dumps({"cmd": f"git clone https://github.com/used/{name}.git"}),
+                    }},
+                    {"type": "response_item", "payload": {
+                        "type": "function_call_output", "call_id": name,
+                        "output": json.dumps({"output": "done", "metadata": {"exit_code": exit_code}}),
+                    }},
+                ])
+            transcript.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+            client = client_type.return_value
+            client.whoami.return_value = "octocat"
+            client.is_starred.return_value = False
+            output, error = StringIO(), StringIO()
+            report_path = root / "report.json"
+            with patch.dict(os.environ, {"CODEX_HOME": str(home / ".codex"),
+                                        "CLAUDE_CONFIG_DIR": str(home / ".claude")}), patch(
+                "pathlib.Path.home", return_value=home
+            ), patch("agent_thanks.cli._require_interactive_terminal"), patch(
+                "builtins.input", side_effect=["y", "y"]
+            ) as ask, redirect_stdout(output), redirect_stderr(error):
+                self.assertEqual(main([
+                    "thanks", "--repo", str(root), "--offline", "--output", str(report_path),
+                ]), 0)
+
+            self.assertIn("Detected coding agent: codex", error.getvalue())
+            candidates = {candidate.repository: candidate for candidate in Report.read(report_path).candidates}
+            self.assertTrue(candidates["used/success"].recommended)
+            self.assertFalse(candidates["used/failure"].recommended)
+            self.assertEqual(ask.call_count, 2)
+            client.star.assert_called_once_with("used/success")
+            self.assertIn("Undo this batch: agent-thanks unstar used/success", output.getvalue())
 
 
 class EntryPointTests(unittest.TestCase):

@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Preserve Unicode, tabs, and newlines in Git manifest paths when scanning
+  tracked changes, untracked files, and baseline dependencies. Moving a
+  manifest still does not count its existing dependencies as new use.
+- Keep large Gemini JSON sessions discoverable while requiring the same exact
+  project and session metadata; malformed or ambiguous JSON is not accepted.
+- Print undo commands for completed Stars when Ctrl+C interrupts a batch,
+  including interruptions between requests.
+- Verify manual CLI logs and auto-detected Codex sessions through the complete
+  detection, per-repository approval, and Star flow; failed or unconfirmed
+  commands remain ineligible.
+
 ## 0.6.0 - 2026-09-15
 
 - Make `agent-thanks thanks` the primary user workflow. With no explicit

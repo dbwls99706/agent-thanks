@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from agent_thanks.cli import main
+from agent_thanks.cli import _execute_stars, main
 from agent_thanks.github import GitHubError
 from agent_thanks.models import Candidate, Evidence, Report
 
@@ -251,6 +251,47 @@ class CliTests(unittest.TestCase):
             "Undo this batch: agent-thanks unstar owner/recommended-one",
             output.getvalue(),
         )
+
+    @patch("agent_thanks.cli.time.sleep", return_value=None)
+    @patch("agent_thanks.cli.GitHubClient")
+    def test_interrupt_prints_undo_only_for_completed_stars(self, client_type, _sleep) -> None:
+        client = client_type.return_value
+        client.whoami.return_value = "octocat"
+        client.is_starred.return_value = False
+        for outcomes, expected_undo in (
+            ([None, KeyboardInterrupt()], "owner/recommended-one"),
+            ([KeyboardInterrupt()], None),
+        ):
+            with self.subTest(completed=expected_undo):
+                client.star.reset_mock()
+                client.star.side_effect = outcomes
+                output, error = StringIO(), StringIO()
+                with patch("agent_thanks.cli._require_interactive_terminal"), patch(
+                    "builtins.input", side_effect=["y", "y", "y"]
+                ), redirect_stdout(output), redirect_stderr(error):
+                    status = main(["star", str(self.report_path)])
+
+                self.assertEqual(status, 130)
+                self.assertIn("Cancelled.", error.getvalue())
+                if expected_undo:
+                    self.assertIn("partial update", output.getvalue())
+                    receipt = output.getvalue().split("Undo this batch:")[-1]
+                    self.assertIn(expected_undo, receipt)
+                    self.assertNotIn("owner/recommended-two", receipt)
+                else:
+                    self.assertNotIn("Undo this batch:", output.getvalue())
+
+    @patch("agent_thanks.cli.time.sleep", side_effect=KeyboardInterrupt)
+    @patch("agent_thanks.cli.GitHubClient")
+    def test_interrupt_between_star_requests_preserves_undo(self, client_type, _sleep) -> None:
+        client = client_type.return_value
+        output, error = StringIO(), StringIO()
+        selected = Report.read(self.report_path).candidates[:2]
+        with redirect_stdout(output), redirect_stderr(error), self.assertRaises(KeyboardInterrupt):
+            _execute_stars(selected, dry_run=False, client=client, known_unstarred=True)
+
+        client.star.assert_called_once_with("owner/recommended-one")
+        self.assertIn("Undo this batch: agent-thanks unstar owner/recommended-one", output.getvalue())
 
     @patch("agent_thanks.cli.time.sleep", return_value=None)
     @patch("agent_thanks.cli.GitHubClient")
