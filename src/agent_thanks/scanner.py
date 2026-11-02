@@ -194,6 +194,7 @@ class ProjectScanner:
             check=check,
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
 
     def _baseline_dependency_identities(self) -> set[tuple[str, str, str]] | None:

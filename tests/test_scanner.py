@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from agent_thanks.models import Evidence
 from agent_thanks.resolver import PackageRepositoryResolver
@@ -32,7 +33,11 @@ class ScannerTests(unittest.TestCase):
                     encoding="utf-8",
                 )
 
-            report = ProjectScanner(root, resolver=PackageRepositoryResolver(offline=True)).scan()
+            # Git emits UTF-8 paths even when Python's locale encoding is ASCII.
+            with patch("locale.getpreferredencoding", return_value="ascii"), patch(
+                "locale.getencoding", return_value="ascii", create=True
+            ):
+                report = ProjectScanner(root, resolver=PackageRepositoryResolver(offline=True)).scan()
 
             self.assertEqual(
                 {candidate.repository for candidate in report.candidates},

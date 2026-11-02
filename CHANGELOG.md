@@ -5,7 +5,8 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Preserve Unicode, tabs, and newlines in Git manifest paths when scanning
-  tracked changes, untracked files, and baseline dependencies. Moving a
+  tracked changes, untracked files, and baseline dependencies, including on
+  systems whose default text encoding is not UTF-8. Moving a
   manifest still does not count its existing dependencies as new use.
 - Keep large Gemini JSON sessions discoverable while requiring the same exact
   project and session metadata; malformed or ambiguous JSON is not accepted.
