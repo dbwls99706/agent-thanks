@@ -328,10 +328,13 @@ def _parse_go_mod(text: str) -> list[Dependency]:
     if block is not None:
         raise ValueError("unterminated Go directive block")
     dependencies: list[Dependency] = []
-    for module, version in required:
-        specific, general = (module, version), (module, None)
-        replaced = specific in replacements or general in replacements
-        target = replacements.get(specific, replacements.get(general)) if replaced else module
+    versioned = {module for module, version in replacements if version is not None}
+    for module, _version in required:
+        general = module, None
+        replaced = module in versioned or general in replacements
+        # A require version is a minimum. The complete module graph may select
+        # another version, changing which version-specific replacement applies.
+        target = None if module in versioned else replacements.get(general, module)
         repository = None
         if target is not None and target.casefold().startswith("github.com/"):
             repository = repository_from_metadata_url(f"https://{target}")

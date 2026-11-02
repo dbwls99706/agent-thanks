@@ -55,7 +55,7 @@ class ManifestParsingTests(unittest.TestCase):
                 self.assertFalse(dependencies[0].from_registry)
                 self.assertNotEqual(dependencies[0].repository, "original/lib")
 
-    def test_go_version_specific_replacements_only_affect_matching_versions(self) -> None:
+    def test_go_version_specific_replacements_need_the_selected_module_version(self) -> None:
         text = (
             "replace (\n"
             " github.com/original/lib => github.com/general/lib v1.1.0\n"
@@ -63,13 +63,15 @@ class ManifestParsingTests(unittest.TestCase):
             ")\n"
             "require github.com/original/lib {version}\n"
         )
-        for version, expected in (("v1.0.0", "specific/lib"), ("v2.0.0", "general/lib")):
+        for version in ("v1.0.0", "v1.2.0"):
             with self.subTest(version=version):
-                self.assertEqual(parse_manifest("go.mod", text.format(version=version))[0].repository, expected)
-        self.assertEqual(parse_manifest(
+                dependency = parse_manifest("go.mod", text.format(version=version))[0]
+                self.assertIsNone(dependency.repository)
+                self.assertFalse(dependency.from_registry)
+        self.assertIsNone(parse_manifest(
             "go.mod", "require github.com/original/lib v1.0.0\n"
-            "replace github.com/original/lib v2.0.0 => ../unused\n"
-        )[0].repository, "original/lib")
+            "replace github.com/original/lib v1.2.0 => ../local\n"
+        )[0].repository)
 
     def test_invalid_go_replacements_do_not_fall_back_to_upstream(self) -> None:
         for replacement in (

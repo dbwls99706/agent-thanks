@@ -225,7 +225,8 @@ Supported repository-use commands include Git clone and submodule operations plu
 
 Package names from PyPI, npm, and crates.io can be mapped through public registry metadata. `--offline` disables those lookups. GitHub-hosted Go modules, submodules, and direct Git URLs can resolve locally.
 
-Go `replace` directives are applied before attributing a dependency. Renamed
+Go `replace` directives are applied before attributing a dependency; version-specific
+replacements stay unresolved without the selected module graph. Renamed
 Cargo dependencies use their published package names. Dependencies with Cargo
 patches/replacements, uv source overrides, or requirements index/find-links
 options stay unresolved when the selected source is uncertain; they are not

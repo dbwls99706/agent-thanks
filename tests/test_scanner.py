@@ -57,6 +57,17 @@ class ScannerTests(unittest.TestCase):
                 if not expected:
                     self.assertEqual(report.unresolved_dependencies[0].package, "github.com/original/lib")
 
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "go.mod").write_text(
+                "require github.com/original/lib v1.0.0\n"
+                "replace github.com/original/lib v1.0.0 => github.com/fork/lib v1.1.0\n",
+                encoding="utf-8",
+            )
+            report = ProjectScanner(root, resolver=PackageRepositoryResolver(offline=True)).scan()
+            self.assertEqual(report.candidates, [])
+            self.assertEqual(report.unresolved_dependencies[0].package, "github.com/original/lib")
+
     def test_python_name_spelling_changes_do_not_count_as_new_use(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

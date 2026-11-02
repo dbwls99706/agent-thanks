@@ -12,7 +12,8 @@ All notable changes to this project will be documented in this file.
   cannot be established, instead of crediting the default public upstream.
 - Attribute Go dependencies to applicable `replace` targets. A local or
   non-GitHub replacement never recommends the unused upstream repository, and
-  malformed or conflicting replacements fail the scan instead of guessing.
+  version-specific replacements stay unresolved without the selected module
+  graph. Malformed or conflicting replacements fail the scan instead of guessing.
 - Treat equivalent Python distribution name spellings as the same dependency,
   avoiding new-use claims from punctuation or case changes alone.
 - Recognize PyPI `Source Code` link labels before falling back to a homepage,
