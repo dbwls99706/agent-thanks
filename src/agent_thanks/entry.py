@@ -23,7 +23,7 @@ def _repo_from_args(args: list[str]) -> Path:
 
 def _has_explicit_session_source(args: list[str]) -> bool:
     return any(
-        argument in {"--from", "--session"}
+        argument in {"--from", "--session", "--all-sessions"}
         or argument.startswith("--from=")
         or argument.startswith("--session=")
         for argument in args
@@ -54,15 +54,19 @@ def _detect_agent(root: Path) -> str | None:
 
 
 def _quick_help() -> str:
-    return """agent-thanks - find OSS your coding agent used and thank it with a Star
+    return """agent-thanks - find OSS used in your coding work and thank it with a Star
 
 Everyday use:
   agent-thanks thanks              Detect, review, and approve Stars
   agent-thanks thanks --dry-run    Preview the exact repositories first
+  agent-thanks exec -- COMMAND     Run and record a CLI command's real result
+  agent-thanks thanks --all-sessions  Review all matching agent sessions
+  agent-thanks history             Inspect saved Star receipts
+  agent-thanks undo --last         Review and undo the latest confirmed batch
 
 The thanks command auto-detects the newest Claude Code, Codex, or Gemini
 transcript that belongs to the current project. Pass --from or --session to
-choose the source explicitly.
+choose the source explicitly. Locally captured exec records are included too.
 
 Other commands:
   demo      Safe built-in demonstration
@@ -94,6 +98,7 @@ options:
   --base REVISION         State before the agent worked (default: HEAD)
   --from AGENT            Use claude-code, codex, or gemini explicitly
   --session PATH          Use a transcript or log explicitly; repeatable
+  --all-sessions          Collect all matching project sessions, optionally --from
   --output PATH           JSON report path (default: .agent-thanks-report.json)
   --offline               Skip package-registry lookups
   --trust-session         Trust commands from plain-text logs as successful
@@ -101,7 +106,8 @@ options:
   -h, --help              Show this help
 
 Live Stars always require an interactive terminal, one default-No decision per
-repository, and a final confirmation.
+repository, and a final confirmation. Confirmed Stars are saved in private
+receipts for history and account-checked undo.
 """
 
 
@@ -135,7 +141,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"Detected coding agent: {agent}", file=sys.stderr)
             else:
                 print(
-                    "No matching coding-agent transcript found; scanning project changes only.",
+                    "No matching coding-agent transcript found; scanning project changes and local captures.",
                     file=sys.stderr,
                 )
 

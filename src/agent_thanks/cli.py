@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import stat
 import shutil
+import shlex
 import subprocess
 import sys
 import time
@@ -17,6 +18,7 @@ from . import __version__
 from .exporter import render_markdown
 from .github import GitHubClient, GitHubError, validate_repository
 from .models import Candidate, Evidence, Report
+from . import executions, receipts
 from .resolver import PackageRepositoryResolver
 from .scanner import ProjectScanner, ScanError
 from .transcripts import (
@@ -29,7 +31,9 @@ from .transcripts import (
     load_json,
     HOOK_PROMOTION_MATRIX,
     locate_transcript,
+    locate_transcripts,
     result_status,
+    same_path,
     transcript_locations,
 )
 
@@ -61,6 +65,23 @@ def build_parser() -> argparse.ArgumentParser:
         "demo",
         help="Preview the evidence and dry-run flow without credentials or network access",
     )
+
+    execute = commands.add_parser(
+        "exec", help="Run a command and privately record its actual result for later review",
+    )
+    execute.add_argument("--repo", type=Path, default=Path.cwd(), help="Working/project directory")
+    execute.add_argument("argv", nargs=argparse.REMAINDER, help="Command and arguments after --")
+
+    history = commands.add_parser("history", help="Read local Star receipts without contacting GitHub")
+    history.add_argument("--repo", type=Path, default=Path.cwd(), help="Project containing the receipts")
+    history.add_argument("--json", action="store_true", help="Print machine-readable receipts")
+
+    undo = commands.add_parser("undo", help="Review and undo confirmed Stars from a saved receipt")
+    undo.add_argument("--repo", type=Path, default=Path.cwd(), help="Project containing the receipts")
+    undo_choice = undo.add_mutually_exclusive_group()
+    undo_choice.add_argument("--receipt", help="Receipt identifier shown by history")
+    undo_choice.add_argument("--last", action="store_true", help="Use the latest receipt with confirmed Stars (default)")
+    undo.add_argument("--dry-run", action="store_true", help="Preview without authentication or account changes")
 
     run = commands.add_parser(
         "run",
@@ -111,6 +132,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Star only this owner/repo; repeatable",
     )
     star.add_argument("--dry-run", action="store_true", help="Show actions without starring")
+    star.add_argument(
+        "--project", type=Path,
+        help="Project for Star receipts (default: report directory, or enclosing hook project)",
+    )
 
     unstar = commands.add_parser("unstar", help="Revoke stars previously granted")
     unstar.add_argument("repositories", nargs="+", metavar="OWNER/REPO")
@@ -178,6 +203,10 @@ def _add_scan_arguments(parser: argparse.ArgumentParser) -> None:
         help="Scan the newest transcript this coding agent wrote for the project",
     )
     parser.add_argument(
+        "--all-sessions", action="store_true",
+        help="Collect all matching project transcripts; --from limits the agent",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=Path(DEFAULT_REPORT),
@@ -202,6 +231,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.command == "exec":
+            return _exec(args)
+        if args.command == "history":
+            return _history(args)
+        if args.command == "undo":
+            return _undo(args)
         if args.command == "run":
             return _run(args)
         if args.command == "demo":
@@ -220,7 +255,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _doctor(args)
         if args.command == "hook":
             return _hook(args)
-    except (OSError, ValueError, InteractionError, ScanError, GitHubError) as error:
+    except (OSError, ValueError, RuntimeError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
@@ -232,13 +267,27 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _build_report(args: argparse.Namespace) -> Report:
     resolver = PackageRepositoryResolver(offline=args.offline)
+    root = args.repo.expanduser().resolve()
     sessions = list(args.session)
-    if args.agent:
-        sessions.append(_locate_agent_transcript(args.agent, args.repo))
+    if args.all_sessions:
+        for agent in (args.agent,) if args.agent else AGENTS:
+            found = locate_transcripts(agent, root, Path.home())
+            sessions.extend(found)
+            if found:
+                print(f"Transcripts: {agent}: {len(found)}", file=sys.stderr)
+    elif args.agent:
+        sessions.append(_locate_agent_transcript(args.agent, root))
+    native = _existing_state_file(root, "sessions", "executions.jsonl")
+    if native is not None:
+        sessions.append(native)
+    unique: dict[str, Path] = {}
+    for session in sessions:
+        key = "-" if str(session) == "-" else str(session.expanduser().resolve())
+        unique.setdefault(key, Path(key))
     scanner = ProjectScanner(
-        args.repo, base=args.base, resolver=resolver, trust_sessions=args.trust_session
+        root, base=args.base, resolver=resolver, trust_sessions=args.trust_session
     )
-    return scanner.scan(sessions)
+    return scanner.scan(unique.values())
 
 
 def _locate_agent_transcript(agent: str, root: Path) -> Path:
@@ -252,6 +301,144 @@ def _locate_agent_transcript(agent: str, root: Path) -> Path:
         )
     print(f"Transcript: {transcript}", file=sys.stderr)
     return transcript
+
+
+def _existing_state_directory(root: Path, *parts: str) -> Path | None:
+    path = root / STATE_DIRECTORY
+    for component in (None, *parts):
+        if component is not None:
+            path = path / component
+        if path.is_symlink():
+            raise RuntimeError(f"Refusing to use {path}: it is a symbolic link")
+        if not path.exists():
+            return None
+        if not path.is_dir():
+            raise RuntimeError(f"Refusing to use {path}: not a directory")
+    return path
+
+
+def _existing_state_file(root: Path, directory: str, name: str) -> Path | None:
+    parent = _existing_state_directory(root, directory)
+    if parent is None:
+        return None
+    path = parent / name
+    if path.is_symlink():
+        raise RuntimeError(f"Refusing to read {path}: it is a symbolic link")
+    if not path.exists():
+        return None
+    if not _is_private_regular_file(path):
+        raise RuntimeError(f"Refusing to read {path}: not a regular file")
+    return path
+
+
+def _receipt_directory(root: Path, *, create: bool) -> Path | None:
+    if create:
+        return _private_directory(_state_directory(root) / "receipts")
+    return _existing_state_directory(root, "receipts")
+
+
+def _exec(args: argparse.Namespace) -> int:
+    argv = args.argv[1:] if args.argv[:1] == ["--"] else args.argv
+    if not argv:
+        raise ValueError("exec requires a command after --")
+    root = args.repo.expanduser().resolve()
+    if not root.is_dir():
+        raise ValueError(f"Project directory does not exist: {root}")
+    directory = _private_directory(_state_directory(root) / "sessions")
+    log = directory / "executions.jsonl"
+    result = executions.execute(
+        argv, cwd=root, log_path=log,
+        write_record=lambda path, text: _private_write(path, text, append=True),
+    )
+    print(f"Execution recorded: {log}", file=sys.stderr)
+    return result if result >= 0 else 128 - result
+
+
+def _history(args: argparse.Namespace) -> int:
+    root = args.repo.expanduser().resolve()
+    directory = _receipt_directory(root, create=False)
+    items = receipts.list_receipts(directory, read=_private_read) if directory else []
+    if args.json:
+        print(json.dumps([item.to_dict() for item in items], indent=2, ensure_ascii=False))
+        return 0
+    if not items:
+        print("No Star receipts found for this project.")
+        return 0
+    for item in items:
+        states: dict[str, int] = {}
+        for entry in item.entries:
+            states[entry.state] = states.get(entry.state, 0) + 1
+        summary = ", ".join(f"{count} {state}" for state, count in sorted(states.items()))
+        print(f"{item.id}  @{item.account}  {item.created_at}  {summary}")
+        for entry in item.entries:
+            suffix = f" ({entry.error})" if entry.error else ""
+            print(f"  {entry.state}: https://github.com/{entry.repository}{suffix}")
+    return 0
+
+
+def _undo(args: argparse.Namespace) -> int:
+    root = args.repo.expanduser().resolve()
+    directory = _receipt_directory(root, create=False)
+    if directory is None:
+        if args.receipt:
+            raise ValueError(f"Receipt does not exist: {args.receipt}")
+        print("No confirmed Stars to undo.")
+        return 0
+    receipt = (
+        receipts.read_receipt(directory, args.receipt, read=_private_read)
+        if args.receipt else receipts.latest_receipt(directory, read=_private_read)
+    )
+    if receipt is None or not receipt.confirmed_repositories:
+        print("No confirmed Stars to undo.")
+        return 0
+    if not same_path(receipt.root, root):
+        raise ValueError("Receipt belongs to a different project directory")
+    selected = receipt.confirmed_repositories
+    print(f"Star receipt: {receipt.id} (@{receipt.account})")
+    if receipt.pending_repositories:
+        print(f"Unconfirmed outcomes excluded from undo: {len(receipt.pending_repositories)}")
+    if args.dry_run:
+        for repository in selected:
+            print(f"Would unstar: https://github.com/{repository}")
+        return 0
+    _require_interactive_terminal("Undoing Stars")
+    client = GitHubClient()
+    account = client.whoami()
+    print(f"GitHub account: @{account}")
+    if account.casefold() != receipt.account.casefold():
+        raise InteractionError(
+            f"Receipt belongs to @{receipt.account}; authenticate as that account before undoing."
+        )
+    approved: list[str] = []
+    for repository in selected:
+        answer = _read_answer(f"Unstar https://github.com/{repository}? [y/N/q] ")
+        if answer in {"q", "quit", "cancel"}:
+            print("Cancelled.")
+            return 0
+        if answer in {"y", "yes"}:
+            approved.append(repository)
+    if not approved:
+        print("No repositories selected.")
+        return 0
+    if _read_answer(f"Proceed with {len(approved)} unstar(s)? [y/N] ") not in {"y", "yes"}:
+        print("Cancelled.")
+        return 0
+    for index, repository in enumerate(approved):
+        # Ensure local state can be persisted before each account mutation.
+        receipt = receipts.update_receipt(
+            directory, receipt, repository, "starred", write=_private_write,
+        )
+        if client.is_starred(repository):
+            client.unstar(repository)
+            print(f"Unstarred: https://github.com/{repository}")
+        else:
+            print(f"Not starred: https://github.com/{repository}")
+        receipt = receipts.update_receipt(
+            directory, receipt, repository, "undone", write=_private_write,
+        )
+        if index + 1 < len(approved):
+            time.sleep(0.25)
+    return 0
 
 
 def _demo() -> int:
@@ -330,7 +517,7 @@ def _run(args: argparse.Namespace) -> int:
     _write_report(report, args.output)
     eligible = _eligible_candidates(report.candidates)
     _print_ineligible_summary(report.candidates)
-    return _review_and_star(eligible, dry_run=args.dry_run)
+    return _review_and_star(eligible, dry_run=args.dry_run, receipt_root=Path(report.root))
 
 
 def _review(path: Path) -> int:
@@ -375,7 +562,18 @@ def _star(args: argparse.Namespace) -> int:
         selected = _eligible_candidates(report.candidates)
         _print_ineligible_summary(report.candidates)
 
-    return _review_and_star(selected, dry_run=args.dry_run)
+    report_directory = args.report.expanduser().resolve().parent
+    if args.project is not None:
+        receipt_root = args.project.expanduser().resolve()
+    elif report_directory.name == "reports" and report_directory.parent.name == STATE_DIRECTORY:
+        receipt_root = report_directory.parent.parent
+    elif report_directory.name == STATE_DIRECTORY:
+        receipt_root = report_directory.parent
+    else:
+        receipt_root = report_directory
+    if not receipt_root.is_dir():
+        raise ValueError(f"Project directory does not exist: {receipt_root}")
+    return _review_and_star(selected, dry_run=args.dry_run, receipt_root=receipt_root)
 
 
 def _eligible_candidates(candidates: list[Candidate]) -> list[Candidate]:
@@ -391,7 +589,9 @@ def _print_ineligible_summary(candidates: list[Candidate]) -> None:
         )
 
 
-def _review_and_star(selected: list[Candidate], *, dry_run: bool) -> int:
+def _review_and_star(
+    selected: list[Candidate], *, dry_run: bool, receipt_root: Path | None = None
+) -> int:
     for candidate in selected:
         validate_repository(candidate.repository)
     if dry_run:
@@ -402,7 +602,8 @@ def _review_and_star(selected: list[Candidate], *, dry_run: bool) -> int:
 
     _require_interactive_terminal("Starring")
     client = GitHubClient()
-    print(f"GitHub account: @{client.whoami()}")
+    account = client.whoami()
+    print(f"GitHub account: @{account}")
     pending = _exclude_existing_stars(selected, client)
     if not pending:
         print("No unstarred repositories require a decision.")
@@ -414,6 +615,8 @@ def _review_and_star(selected: list[Candidate], *, dry_run: bool) -> int:
         dry_run=False,
         client=client,
         known_unstarred=True,
+        receipt_root=receipt_root,
+        account=account,
     )
 
 
@@ -437,6 +640,8 @@ def _execute_stars(
     dry_run: bool,
     client: GitHubClient | None = None,
     known_unstarred: bool = False,
+    receipt_root: Path | None = None,
+    account: str | None = None,
 ) -> int:
     if not selected:
         print("No repositories selected.")
@@ -449,6 +654,17 @@ def _execute_stars(
 
     if client is None:
         raise InteractionError("An authenticated interactive Star session is required.")
+    receipt = None
+    directory = None
+    if receipt_root is not None:
+        if account is None:
+            raise InteractionError("An authenticated account is required for a Star receipt.")
+        directory = _receipt_directory(receipt_root, create=True)
+        receipt = receipts.begin_receipt(
+            directory, account, str(receipt_root.resolve()),
+            [candidate.repository for candidate in selected], write=_private_write,
+        )
+        print(f"Star receipt: {receipt.id}")
     newly_starred: list[str] = []
     try:
         for index, candidate in enumerate(selected):
@@ -457,15 +673,23 @@ def _execute_stars(
             else:
                 client.star(candidate.repository)
                 newly_starred.append(candidate.repository)
+                if receipt is not None:
+                    receipt = receipts.update_receipt(
+                        directory, receipt, candidate.repository, "starred", write=_private_write,
+                    )
                 print(f"Starred: https://github.com/{candidate.repository}")
             if index + 1 < len(selected):
                 time.sleep(0.25)
-    except (GitHubError, OSError, KeyboardInterrupt):
+    except (OSError, ValueError, RuntimeError, KeyboardInterrupt):
         if newly_starred:
             print("The batch stopped after a partial update.")
             _print_undo(newly_starred)
         raise
     _print_undo(newly_starred)
+    if receipt is not None:
+        print("Undo receipt: " + shlex.join([
+            "agent-thanks", "undo", "--repo", str(receipt_root), "--receipt", receipt.id,
+        ]))
     return 0
 
 
@@ -675,7 +899,7 @@ def _tighten_state(state: Path) -> None:
     """Tighten every known state file and directory to owner-only access on POSIX."""
     if os.name == "nt":
         return
-    for name in ("sessions", "reports"):
+    for name in ("sessions", "reports", "receipts"):
         directory = state / name
         try:
             if stat.S_ISDIR(os.lstat(directory).st_mode):
@@ -686,6 +910,7 @@ def _tighten_state(state: Path) -> None:
         (state, (".gitignore", "report.json", "announced.json")),
         (state / "sessions", (".jsonl",)),
         (state / "reports", (".json",)),
+        (state / "receipts", (".json",)),
     )
     for directory, suffixes in known:
         try:

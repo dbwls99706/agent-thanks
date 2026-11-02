@@ -9,6 +9,15 @@ from agent_thanks.github import GitHubClient, GitHubError, validate_repository
 
 
 class GitHubClientTests(unittest.TestCase):
+    @patch("agent_thanks.github.subprocess.run", side_effect=subprocess.TimeoutExpired("gh", 2))
+    @patch("agent_thanks.github.shutil.which", return_value="gh")
+    def test_github_cli_timeout_becomes_an_actionable_error(self, _which, run) -> None:
+        with patch.dict(os.environ, {}, clear=True), self.assertRaisesRegex(
+            GitHubError, "timed out after 2 seconds"
+        ):
+            GitHubClient(timeout=2).star("owner/repo")
+        self.assertEqual(run.call_args.kwargs["timeout"], 2)
+
     def test_validate_repository(self) -> None:
         self.assertEqual(validate_repository("owner/repo"), "owner/repo")
         self.assertEqual(

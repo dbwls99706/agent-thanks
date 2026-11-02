@@ -6,6 +6,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from . import __version__
 from .repositories import repository_from_metadata_url
 
 
@@ -57,7 +58,7 @@ class PackageRepositoryResolver:
         return result
 
     def _fetch_json(self, url: str) -> dict[str, Any]:
-        request = Request(url, headers={"User-Agent": "agent-thanks/0.1"})
+        request = Request(url, headers={"User-Agent": f"agent-thanks/{__version__}"})
         with urlopen(request, timeout=self.timeout) as response:
             return json.load(response)
 
@@ -65,10 +66,11 @@ class PackageRepositoryResolver:
         data = self._fetcher(f"https://pypi.org/pypi/{quote(package, safe='')}/json")
         info = data.get("info", {})
         project_urls = info.get("project_urls") or {}
-        preferred_labels = ("source", "repository", "code", "github", "homepage")
+        preferred_labels = ("source", "sourcecode", "repository", "code", "github", "homepage")
         for preferred in preferred_labels:
             for label, value in project_urls.items():
-                if str(label).casefold() == preferred:
+                normalized = str(label).casefold().translate(str.maketrans("", "", " -_."))
+                if normalized == preferred:
                     repository = repository_from_metadata_url(value)
                     if repository:
                         return repository

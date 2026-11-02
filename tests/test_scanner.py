@@ -16,6 +16,72 @@ def git(root: Path, *args: str) -> None:
 
 
 class ScannerTests(unittest.TestCase):
+    def test_ambiguous_sources_stay_unresolved_without_public_registry_lookups(self) -> None:
+        cases = [
+            ("requirements.txt", "--index-url https://private.example/simple\nrequests\ncustom @ git+https://github.com/actual/custom.git\n", "requests"),
+            ("pyproject.toml", '[project]\ndependencies=["requests","custom @ git+https://github.com/actual/custom.git"]\n[tool.uv.sources]\nrequests={path="../local"}\n', "requests"),
+            ("Cargo.toml", '[dependencies]\nserde="1"\ncustom={git="https://github.com/actual/custom.git"}\n[patch.crates-io]\nserde={path="../local"}\n', "serde"),
+        ]
+        for path, content, package in cases:
+            with self.subTest(path=path), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / path).write_text(content, encoding="utf-8")
+                resolver = PackageRepositoryResolver(fetcher=lambda _: self.fail("ambiguous source must not be resolved on public registry"))
+                report = ProjectScanner(root, resolver=resolver).scan()
+                self.assertEqual([candidate.repository for candidate in report.candidates], ["actual/custom"])
+                self.assertEqual([item.package for item in report.unresolved_dependencies], [package])
+
+    def test_cargo_alias_resolves_the_actual_package_instead_of_the_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "Cargo.toml").write_text('[dependencies]\nserde_json={package="serde",version="1"}\n', encoding="utf-8")
+            looked_up = []
+            def fetch(url):
+                looked_up.append(url)
+                return {"crate": {"repository": "https://github.com/serde-rs/serde"}}
+            report = ProjectScanner(root, resolver=PackageRepositoryResolver(fetcher=fetch)).scan()
+            self.assertEqual(looked_up, ["https://crates.io/api/v1/crates/serde"])
+            self.assertEqual([candidate.repository for candidate in report.candidates], ["serde-rs/serde"])
+
+    def test_go_replacements_never_recommend_the_unused_upstream(self) -> None:
+        for target, expected in (("../local", []), ("github.com/fork/lib v1.2.3", ["fork/lib"])):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "go.mod").write_text(
+                    "module example.org/app\nrequire github.com/original/lib v1.0.0\n"
+                    f"replace github.com/original/lib => {target}\n", encoding="utf-8",
+                )
+                report = ProjectScanner(root, resolver=PackageRepositoryResolver(offline=True)).scan()
+                self.assertEqual([candidate.repository for candidate in report.candidates], expected)
+                self.assertTrue(all(candidate.recommended for candidate in report.candidates))
+                if not expected:
+                    self.assertEqual(report.unresolved_dependencies[0].package, "github.com/original/lib")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "go.mod").write_text(
+                "require github.com/original/lib v1.0.0\n"
+                "replace github.com/original/lib v1.0.0 => github.com/fork/lib v1.1.0\n",
+                encoding="utf-8",
+            )
+            report = ProjectScanner(root, resolver=PackageRepositoryResolver(offline=True)).scan()
+            self.assertEqual(report.candidates, [])
+            self.assertEqual(report.unresolved_dependencies[0].package, "github.com/original/lib")
+
+    def test_python_name_spelling_changes_do_not_count_as_new_use(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git(root, "init")
+            manifest = root / "requirements.txt"
+            manifest.write_text("zope.interface==1.0\n", encoding="utf-8")
+            git(root, "add", ".")
+            git(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "base")
+            manifest.write_text("Zope_Interface==2.0\n", encoding="utf-8")
+            resolver = PackageRepositoryResolver(fetcher=lambda _: self.fail("existing dependency must not be resolved"))
+            report = ProjectScanner(root, resolver=resolver).scan()
+            self.assertEqual(report.candidates, [])
+            self.assertEqual(report.unresolved_dependencies, [])
+
     def test_untracked_manifests_preserve_unicode_and_control_characters(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

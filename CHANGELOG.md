@@ -4,6 +4,40 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.7.0 - 2026-11-02
+
+- Add `agent-thanks exec -- COMMAND ...` for people and CLI tools to capture
+  real execution outcomes locally. Supported successful repository-use commands
+  become evidence without a plain-text attestation; failures, interrupted runs,
+  damaged records, and unconfirmed outcomes stay review-only. Command output is
+  inherited by the terminal and is not stored in the capture log.
+- Add `--all-sessions` to collect matching Claude Code, Codex, and Gemini
+  transcripts for one project, with `--from` as an optional agent filter. Exact
+  project/session identities and conflicting-result checks still apply.
+- Save private, account-bound Star receipts before requests and after confirmed
+  responses. Add read-only `history`/`history --json` and interactive `undo
+  --last`/`undo --receipt ID`. Undo excludes unconfirmed outcomes, verifies the
+  account, and requires individual decisions plus final confirmation.
+- Keep quoted shell operators as arguments instead of allowing quoted text to
+  invent successful commands. Actual safe command chains remain supported.
+
+
+- Resolve renamed Cargo dependencies by their published package names. Keep
+  dependencies with Cargo patches/replacements, uv source overrides, or
+  requirements index/find-links options unresolved when the selected source
+  cannot be established, instead of crediting the default public upstream.
+- Attribute Go dependencies to applicable `replace` targets. A local or
+  non-GitHub replacement never recommends the unused upstream repository, and
+  version-specific replacements stay unresolved without the selected module
+  graph. Malformed or conflicting replacements fail the scan instead of guessing.
+- Treat equivalent Python distribution name spellings as the same dependency,
+  avoiding new-use claims from punctuation or case changes alone.
+- Recognize PyPI `Source Code` link labels before falling back to a homepage,
+  and send the current client version in registry requests.
+- Find matching transcripts even when more than 200 newer files belong to
+  other projects; exact project and session matching is still required.
+- Bound GitHub CLI requests by the configured timeout and report timeouts as
+  normal actionable errors.
 - Preserve Unicode, tabs, and newlines in Git manifest paths when scanning
   tracked changes, untracked files, and baseline dependencies, including on
   systems whose default text encoding is not UTF-8. Moving a

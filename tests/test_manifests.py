@@ -1,9 +1,87 @@
 import unittest
 
-from agent_thanks.manifests import parse_manifest
+from agent_thanks.manifests import Dependency, parse_manifest
 
 
 class ManifestParsingTests(unittest.TestCase):
+    def test_cargo_package_alias_uses_the_published_package_name(self) -> None:
+        dependencies = parse_manifest("Cargo.toml", '[dependencies]\nserde_json={package="serde",version="1"}\n')
+        self.assertEqual(dependencies[0].name, "serde")
+        self.assertTrue(dependencies[0].from_registry)
+
+    def test_source_overrides_do_not_claim_the_default_upstream(self) -> None:
+        cases = [
+            ("Cargo.toml", '[dependencies]\nserde="1"\n[patch.crates-io]\nserde={path="../local"}\n'),
+            ("Cargo.toml", '[dependencies]\nserde="1"\n[patch.crates-io]\nalias={package="serde",git="https://github.com/fork/serde"}\n'),
+            ("Cargo.toml", '[dependencies]\nserde={git="https://github.com/serde-rs/serde"}\n[replace]\n"serde:1.0.0"={path="../local"}\n'),
+            ("pyproject.toml", '[project]\ndependencies=["requests"]\n[tool.uv.sources]\nRequests={path="../local"}\n'),
+        ]
+        for path, content in cases:
+            with self.subTest(path=path, content=content):
+                dependency = parse_manifest(path, content)[0]
+                self.assertIsNone(dependency.repository)
+                self.assertFalse(dependency.from_registry)
+
+    def test_requirements_alternate_sources_preserve_only_explicit_repository_pins(self) -> None:
+        for option in ("--index-url=https://private.example/simple", "--extra-index-url https://private.example/simple",
+                       "--find-links ../wheels", "--no-index", "-ihttps://private.example/simple", "-f ../wheels"):
+            with self.subTest(option=option):
+                dependencies = parse_manifest(
+                    "requirements.txt", "requests\n" + option + "\ncustom @ git+https://github.com/actual/custom.git\n"
+                )
+                self.assertFalse(dependencies[0].from_registry)
+                self.assertIsNone(dependencies[0].repository)
+                self.assertEqual(dependencies[1].repository, "actual/custom")
+
+    def test_python_distribution_name_variations_share_an_identity(self) -> None:
+        for name in ("zope.interface", "Zope_Interface", "zope--interface", "zope._-interface"):
+            with self.subTest(name=name):
+                self.assertEqual(Dependency("pypi", name).identity, Dependency("pypi", "zope-interface").identity)
+
+    def test_go_replacements_identify_the_source_actually_used(self) -> None:
+        for target, expected in (
+            ("../local", None),
+            ('"../local library"', None),
+            ("github.com/local/directory", None),
+            ("github.com/fork/lib v1.2.3", "fork/lib"),
+            ("example.org/other/lib v1.2.3", None),
+        ):
+            with self.subTest(target=target):
+                dependencies = parse_manifest(
+                    "go.mod", "require github.com/original/lib v1.0.0\n"
+                    f"replace github.com/original/lib => {target}\n"
+                )
+                self.assertEqual(dependencies[0].repository, expected)
+                self.assertFalse(dependencies[0].from_registry)
+                self.assertNotEqual(dependencies[0].repository, "original/lib")
+
+    def test_go_version_specific_replacements_need_the_selected_module_version(self) -> None:
+        text = (
+            "replace (\n"
+            " github.com/original/lib => github.com/general/lib v1.1.0\n"
+            " github.com/original/lib v1.0.0 => github.com/specific/lib v1.2.0\n"
+            ")\n"
+            "require github.com/original/lib {version}\n"
+        )
+        for version in ("v1.0.0", "v1.2.0"):
+            with self.subTest(version=version):
+                dependency = parse_manifest("go.mod", text.format(version=version))[0]
+                self.assertIsNone(dependency.repository)
+                self.assertFalse(dependency.from_registry)
+        self.assertIsNone(parse_manifest(
+            "go.mod", "require github.com/original/lib v1.0.0\n"
+            "replace github.com/original/lib v1.2.0 => ../local\n"
+        )[0].repository)
+
+    def test_invalid_go_replacements_do_not_fall_back_to_upstream(self) -> None:
+        for replacement in (
+            "replace github.com/original/lib ../local\n",
+            "replace (\ngithub.com/original/lib => ../local\n",
+            "replace github.com/original/lib => ../one\nreplace github.com/original/lib => ../two\n",
+        ):
+            with self.subTest(replacement=replacement), self.assertRaises(ValueError):
+                parse_manifest("go.mod", "require github.com/original/lib v1.0.0\n" + replacement)
+
     def test_requirements(self) -> None:
         dependencies = parse_manifest(
             "requirements.txt",
