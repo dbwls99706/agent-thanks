@@ -938,6 +938,66 @@ class UnresolvablePathTests(unittest.TestCase):
 
 
 class TranscriptLocationTests(unittest.TestCase):
+    def test_claude_alias_layout_uses_metadata_and_excludes_nested_subagents(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            cwd = home / "project"
+            cwd.mkdir()
+            intermediate = home / "intermediate"
+            intermediate.mkdir()
+            recorded_alias = intermediate / ".." / "project"
+            selected = cwd.resolve()
+            projects = home / ".claude" / "projects"
+            alias_folder = projects / encode_project_path(recorded_alias)
+            preferred = projects / encode_project_path(selected)
+            self.assertNotEqual(alias_folder, preferred)
+            alias_folder.mkdir(parents=True)
+            newer = alias_folder / "newer.jsonl"
+            write_jsonl(newer, [{"cwd": str(recorded_alias), "sessionId": "newer"}])
+            os.utime(newer, (2, 2))
+            # There may be no folder encoded from the resolved spelling at all.
+            self.assertFalse(preferred.exists())
+            self.assertEqual(locate_transcripts("claude-code", selected, home, {}), [newer])
+
+            preferred.mkdir()
+            older = preferred / "older.jsonl"
+            write_jsonl(older, [{"cwd": str(selected), "sessionId": "older"}])
+            os.utime(older, (1, 1))
+            foreign = projects / "another-project" / "foreign.jsonl"
+            foreign.parent.mkdir()
+            write_jsonl(foreign, [{"cwd": str(home / "project-other"), "sessionId": "foreign"}])
+            nested = alias_folder / "newer" / "subagents" / "child.jsonl"
+            nested.parent.mkdir(parents=True)
+            write_jsonl(nested, [{"cwd": str(recorded_alias), "sessionId": "child"}])
+            os.utime(foreign, (8, 8))
+            os.utime(nested, (9, 9))
+
+            self.assertEqual(locate_transcripts("claude-code", selected, home, {}), [newer, older])
+            self.assertEqual(locate_transcript("claude-code", selected, home, {}), newer)
+            self.assertEqual(
+                locate_transcripts("claude-code", selected, home, {}, session_id="newer"), [newer]
+            )
+            self.assertEqual(locate_transcript("claude-code", selected, home, {}, session_id="older"), older)
+            self.assertEqual(locate_transcripts("claude-code", selected, home, {}, session_id="foreign"), [])
+            self.assertEqual(locate_transcripts("claude-code", selected, home, {}, session_id="child"), [])
+            mismatch = alias_folder / "requested.jsonl"
+            write_jsonl(mismatch, [{"cwd": str(recorded_alias), "sessionId": "different"}])
+            self.assertEqual(locate_transcripts("claude-code", selected, home, {}, session_id="requested"), [])
+
+    @unittest.skipIf(os.name == "nt", "POSIX symbolic links")
+    def test_claude_sessions_recorded_under_a_symlinked_project_remain_discoverable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            cwd = home / "real"
+            cwd.mkdir()
+            alias = home / "alias"
+            alias.symlink_to(cwd, target_is_directory=True)
+            folder = home / ".claude" / "projects" / encode_project_path(alias)
+            folder.mkdir(parents=True)
+            path = folder / "session.jsonl"
+            write_jsonl(path, [{"cwd": str(alias), "sessionId": "session"}])
+            self.assertEqual(locate_transcripts("claude-code", cwd.resolve(), home, {}), [path])
+
     def test_collects_all_matching_sessions_in_newest_first_order(self) -> None:
         for agent in ("claude-code", "codex", "gemini"):
             with self.subTest(agent=agent), tempfile.TemporaryDirectory() as directory:

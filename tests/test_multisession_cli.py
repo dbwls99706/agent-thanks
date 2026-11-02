@@ -96,6 +96,24 @@ class MultiSessionCliTests(unittest.TestCase):
             {candidate.repository for candidate in report.candidates}, {"used/older", "used/newer"}
         )
 
+    def test_claude_alias_layout_survives_the_cli_resolving_the_project(self) -> None:
+        with self.project() as (root, codex):
+            home = codex.parent.parent
+            intermediate = home / "intermediate"
+            intermediate.mkdir()
+            alias = intermediate / ".." / "project"
+            folder = home / ".claude" / "projects" / encode_project_path(alias)
+            claude_transcript(folder / "alias.jsonl", alias, "used/alias", 5)
+            foreign = home / ".claude" / "projects" / "foreign" / "foreign.jsonl"
+            claude_transcript(foreign, home / "project-other", "foreign/unused", 9)
+            status, report, output = self.run_preview(root, "--all-sessions", "--from", "claude-code")
+        self.assertEqual(status, 0)
+        self.assertEqual(
+            {candidate.repository for candidate in report.candidates}, {"used/claude", "used/alias"}
+        )
+        self.assertTrue(all(candidate.recommended for candidate in report.candidates))
+        self.assertNotIn("foreign/unused", output)
+
     def test_existing_default_still_uses_only_the_newest_matching_session(self) -> None:
         with self.project() as (root, _codex):
             status, report, _output = self.run_preview(root)

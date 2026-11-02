@@ -629,7 +629,7 @@ def agent_home(agent: str, home: Path, environ: Mapping[str, str] | None = None)
 def transcript_locations(
     agent: str, cwd: Path, home: Path, environ: Mapping[str, str] | None = None
 ) -> list[Path]:
-    """Return the directories searched for an agent's transcripts."""
+    """Return the primary transcript directories; Claude also checks alias layouts."""
     base = agent_home(agent, home, environ)
     if agent == "claude-code":
         return [base / "projects" / encode_project_path(cwd)]
@@ -682,7 +682,7 @@ def _matching_transcripts(
 ) -> Iterator[Path]:
     (directory,) = transcript_locations(agent, cwd, home, environ)
     if agent == "claude-code":
-        paths = _transcript_files(directory, "*.jsonl", recursive=False)
+        paths = _claude_transcript_files(directory)
         if session_id is not None:
             paths = (path for path in paths if path.stem == session_id)
     else:
@@ -700,6 +700,30 @@ def _matching_transcripts(
         if session_id is not None and metadata.session_id != session_id:
             continue
         yield candidate
+
+
+def _claude_transcript_files(preferred: Path) -> Iterator[Path]:
+    # The encoded folder is a lookup hint, not project identity. Claude may
+    # have encoded /var before the caller resolved it to /private/var, a Windows
+    # short path, or another alias of the same directory. Inspect sibling
+    # project folders too, but require the recorded cwd in _matching_transcripts.
+    yield from _transcript_files(preferred, "*.jsonl", recursive=False)
+    try:
+        with os.scandir(preferred.parent) as entries:
+            for entry in entries:
+                project = Path(entry.path)
+                if project == preferred:
+                    continue
+                try:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+                except OSError:
+                    continue
+                # Only top-level session files belong to this discovery path;
+                # recursively walking would also pull in subagent transcripts.
+                yield from _transcript_files(project, "*.jsonl", recursive=False)
+    except OSError:
+        return
 
 
 def _transcript_files(directory: Path, pattern: str, *, recursive: bool) -> Iterator[Path]:
