@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from agent_thanks.models import Evidence
 from agent_thanks.transcripts import (
@@ -14,6 +15,7 @@ from agent_thanks.transcripts import (
     is_transcript,
     iter_transcript_records,
     locate_transcript,
+    locate_transcripts,
     result_status,
     same_path,
     scan_transcript_evidence,
@@ -936,6 +938,128 @@ class UnresolvablePathTests(unittest.TestCase):
 
 
 class TranscriptLocationTests(unittest.TestCase):
+    def test_collects_all_matching_sessions_in_newest_first_order(self) -> None:
+        for agent in ("claude-code", "codex", "gemini"):
+            with self.subTest(agent=agent), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory)
+                cwd = home / "project"
+                if agent == "claude-code":
+                    folder = home / ".claude" / "projects" / encode_project_path(cwd)
+                elif agent == "codex":
+                    folder = home / ".codex" / "sessions" / "nested"
+                else:
+                    folder = home / ".gemini" / "tmp" / "nested"
+                folder.mkdir(parents=True)
+                suffix = ".json" if agent == "gemini" else ".jsonl"
+                older = folder / f"older{suffix}"
+                newer = folder / f"newer{suffix}"
+                other = folder / f"other{suffix}"
+                missing = folder / f"missing{suffix}"
+                for path, record, modified in (
+                    (older, {"cwd": str(cwd), "sessionId": "older"}, 1),
+                    (newer, {"cwd": str(cwd) + "/", "sessionId": "newer"}, 3),
+                    (other, {"cwd": str(home / "project-other"), "sessionId": "other"}, 5),
+                    (missing, {"sessionId": "missing"}, 7),
+                ):
+                    path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+                    os.utime(path, (modified, modified))
+                if agent == "gemini":
+                    (folder / "settings.json").write_text(
+                        json.dumps({"cwd": str(cwd), "sessionId": "settings"}), encoding="utf-8"
+                    )
+
+                self.assertEqual(locate_transcripts(agent, cwd, home, {}), [newer, older])
+                self.assertEqual(locate_transcripts(agent, cwd, home, {}, session_id="older"), [older])
+                self.assertEqual(locate_transcripts(agent, cwd, home, {}, session_id="missing"), [])
+                self.assertEqual(locate_transcript(agent, cwd, home, {}), newer)
+
+    def test_newest_lookup_only_reads_metadata_until_the_first_match(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            cwd = home / "project"
+            folder = home / ".codex" / "sessions"
+            folder.mkdir(parents=True)
+            older, newer = folder / "older.jsonl", folder / "newer.jsonl"
+            for index, path in enumerate((older, newer), start=1):
+                write_jsonl(path, [{"cwd": str(cwd), "sessionId": path.stem}])
+                os.utime(path, (index, index))
+
+            with patch("agent_thanks.transcripts.transcript_metadata", wraps=transcript_metadata) as read:
+                self.assertEqual(locate_transcript("codex", cwd, home, {}), newer)
+                read.assert_called_once_with(newer)
+
+    def test_unreadable_and_vanished_files_do_not_hide_other_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            cwd = home / "project"
+            folder = home / ".codex" / "sessions"
+            folder.mkdir(parents=True)
+            healthy = folder / "healthy.jsonl"
+            unreadable = folder / "unreadable.jsonl"
+            vanished = folder / "vanished.jsonl"
+            for index, path in enumerate((healthy, unreadable, vanished), start=1):
+                write_jsonl(path, [{"cwd": str(cwd), "sessionId": path.stem}])
+                os.utime(path, (index, index))
+            original_stat, original_open = Path.stat, Path.open
+
+            def stat_path(path, *args, **kwargs):
+                if path == vanished:
+                    raise FileNotFoundError(str(path))
+                return original_stat(path, *args, **kwargs)
+
+            def open_path(path, *args, **kwargs):
+                if path == unreadable:
+                    raise PermissionError(str(path))
+                return original_open(path, *args, **kwargs)
+
+            with patch.object(Path, "stat", stat_path), patch.object(Path, "open", open_path):
+                self.assertEqual(locate_transcripts("codex", cwd, home, {}), [healthy])
+                self.assertEqual(locate_transcript("codex", cwd, home, {}), healthy)
+
+    def test_unreadable_subdirectory_does_not_hide_a_sibling_session(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            cwd = home / "project"
+            folder = home / ".codex" / "sessions"
+            denied = folder / "denied"
+            healthy = folder / "healthy" / "session.jsonl"
+            denied.mkdir(parents=True)
+            healthy.parent.mkdir()
+            write_jsonl(healthy, [{"cwd": str(cwd), "sessionId": "mine"}])
+            original_scandir = os.scandir
+
+            def scandir(path):
+                if Path(path) == denied:
+                    raise PermissionError(str(path))
+                return original_scandir(path)
+
+            with patch("agent_thanks.transcripts.os.scandir", side_effect=scandir):
+                self.assertEqual(locate_transcripts("codex", cwd, home, {}), [healthy])
+
+    def test_collection_honors_agent_home_overrides(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "home"
+            cwd = home / "project"
+            codex_home = Path(directory) / "codex-custom"
+            claude_home = Path(directory) / "claude-custom"
+            codex_dir = codex_home / "sessions"
+            claude_dir = claude_home / "projects" / encode_project_path(cwd)
+            for folder in (codex_dir, claude_dir):
+                folder.mkdir(parents=True)
+                for index, name in enumerate(("older", "newer"), start=1):
+                    path = folder / f"{name}.jsonl"
+                    write_jsonl(path, [{"cwd": str(cwd), "sessionId": name}])
+                    os.utime(path, (index, index))
+            environ = {"CODEX_HOME": str(codex_home), "CLAUDE_CONFIG_DIR": str(claude_home)}
+
+            for agent, folder in (("codex", codex_dir), ("claude-code", claude_dir)):
+                with self.subTest(agent=agent):
+                    self.assertEqual(
+                        locate_transcripts(agent, cwd, home, environ),
+                        [folder / "newer.jsonl", folder / "older.jsonl"],
+                    )
+                    self.assertEqual(locate_transcripts(agent, cwd, home, {}), [])
+
     def test_other_projects_cannot_hide_a_match_beyond_two_hundred_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)

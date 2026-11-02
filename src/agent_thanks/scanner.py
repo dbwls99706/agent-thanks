@@ -7,6 +7,7 @@ from typing import Iterable
 from .manifests import Dependency, is_supported_manifest, parse_manifest
 from .models import Evidence, Report, UnresolvedDependency, merge_candidates
 from .resolver import PackageRepositoryResolver
+from .executions import is_execution_log, scan_execution_logs_evidence
 from .session import OUTCOME_ATTESTED, OUTCOME_MISSING, scan_session_evidence
 from .transcripts import (
     HookStatus,
@@ -116,11 +117,16 @@ class ProjectScanner:
         # transcript of the scan also sees what the others recorded for each call
         # id, so a failure in one file demotes the same call in another.
         sources = [(session_file, Path(session_file)) for session_file in session_files]
-        hook_logs = [(name, path) for name, path in sources if str(name) != "-" and is_hook_log(path)]
+        native_logs = [(name, path) for name, path in sources if str(name) != "-" and is_execution_log(path)]
+        hook_logs = [
+            (name, path) for name, path in sources
+            if str(name) != "-" and (name, path) not in native_logs and is_hook_log(path)
+        ]
         transcripts = [
             (name, path)
             for name, path in sources
-            if str(name) != "-" and (name, path) not in hook_logs and is_transcript(path)
+            if str(name) != "-" and (name, path) not in native_logs
+            and (name, path) not in hook_logs and is_transcript(path)
         ]
         # Sources are linked only inside a confirmed identity: a transcript's recorded
         # session id and project directory, or a hook log's session id together with
@@ -147,8 +153,13 @@ class ProjectScanner:
             calls_by_identity[identity] = merge_transcript_calls(
                 transcript_calls(path) for path, key in transcript_identity_of.items() if key == identity
             )
+        evidence_items.extend(scan_execution_logs_evidence(
+            [(path, str(name)) for name, path in native_logs], root=self.root,
+        ))
         for name, path in sources:
-            if (name, path) in hook_logs:
+            if (name, path) in native_logs:
+                continue
+            elif (name, path) in hook_logs:
                 identity = log_identity.get(path)
                 evidence_items.extend(
                     scan_hook_log_evidence(

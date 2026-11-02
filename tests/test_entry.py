@@ -204,7 +204,7 @@ class EntryPointTests(unittest.TestCase):
         self.assertEqual(status, 0)
         detect.assert_called_once()
         cli_main.assert_called_once_with(["run", "--dry-run"])
-        self.assertIn("scanning project changes only", error.getvalue())
+        self.assertIn("scanning project changes and local captures", error.getvalue())
 
     def test_detect_agent_prefers_the_newest_matching_transcript(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -309,31 +309,83 @@ def _deduplicate_repositories(repositories: Iterable[str]) -> list[str]:
 def _split_shell_segments(
     line: str,
 ) -> tuple[list[tuple[str | None, list[str]]], str | None] | None:
-    """Split a shell line into (separator, tokens) segments plus any trailing separator."""
-    try:
-        lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|")
-        lexer.whitespace_split = True
-        lexer.commenters = "#"
-        tokens = list(lexer)
-    except ValueError:
-        return []
+    """Split only actual, unquoted shell controls before decoding word quotes.
 
+    Splitting already decoded shlex tokens loses the difference between ``&&``
+    and ``'&&'``. The latter is one ordinary argument and must never invent a
+    second command from text passed to echo, printf, or another executable.
+    """
     segments: list[tuple[str | None, list[str]]] = []
-    current: list[str] = []
     preceding_separator: str | None = None
-    for token in tokens:
-        if token in _SHELL_SEPARATORS:
-            if not current:
-                return None
-            if current:
-                segments.append((preceding_separator, current))
-                current = []
-            preceding_separator = token
-            continue
-        current.append(token)
+    quote: str | None = None
+    word_started = False
+    start = index = 0
     trailing: str | None = None
-    if current:
-        segments.append((preceding_separator, current))
+
+    def append_segment(end: int) -> bool:
+        try:
+            # Comments have already been removed with their shell word
+            # boundaries intact. A # inside a URL or quoted operand is data.
+            tokens = shlex.split(line[start:end], posix=True, comments=False)
+        except ValueError:
+            return False
+        if not tokens:
+            return False
+        segments.append((preceding_separator, tokens))
+        return True
+
+    while index < len(line):
+        character = line[index]
+        if quote == "'":
+            if character == "'":
+                quote = None
+            index += 1
+            continue
+        if character == "\\":
+            if index + 1 == len(line):
+                return None
+            word_started = True
+            index += 2
+            continue
+        if character == "`" or line.startswith("$(", index):
+            return None  # command/arithmetic substitutions need a shell evaluator
+        if quote == '"':
+            if character == '"':
+                quote = None
+            index += 1
+            continue
+        if character in {"'", '"'}:
+            quote = character
+            word_started = True
+            index += 1
+            continue
+        if character == "#" and not word_started:
+            line = line[:index]
+            break
+        if character in "<>":
+            # Redirection is not an ordinary operand. Even a normally safe
+            # prefix such as echo could overwrite an executable on PATH before
+            # a later apparent repository command reports success.
+            return None
+        if character in ";&|":
+            end = index + 1
+            while end < len(line) and line[end] in ";&|":
+                end += 1
+            separator = line[index:end]
+            if separator not in _SHELL_SEPARATORS or not append_segment(index):
+                return None
+            preceding_separator = separator
+            start = index = end
+            word_started = False
+            continue
+        word_started = not character.isspace()
+        index += 1
+
+    if quote is not None:
+        return None
+    if line[start:].strip():
+        if not append_segment(len(line)):
+            return None
     elif preceding_separator in {"&&", "||", "|"}:
         return None
     else:

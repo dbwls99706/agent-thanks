@@ -21,6 +21,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import stat
 from dataclasses import dataclass
 from typing import Any, Iterable, Iterator, Mapping, NamedTuple
 
@@ -644,7 +645,22 @@ def locate_transcript(
     environ: Mapping[str, str] | None = None,
     session_id: str | None = None,
 ) -> Path | None:
-    """Find the transcript an agent wrote for exactly this project and session, or None.
+    """Find the newest transcript for exactly this project and session, or None.
+
+    Metadata is read only until the first confirmed match. Use
+    :func:`locate_transcripts` to collect all matching sessions.
+    """
+    return next(_matching_transcripts(agent, cwd, home, environ, session_id), None)
+
+
+def locate_transcripts(
+    agent: str,
+    cwd: Path,
+    home: Path,
+    environ: Mapping[str, str] | None = None,
+    session_id: str | None = None,
+) -> list[Path]:
+    """Find all confirmed transcripts, newest first, for this project and session.
 
     A candidate counts only when the project directory it records equals ``cwd``
     after normalization; a transcript that records no directory cannot be
@@ -654,24 +670,54 @@ def locate_transcript(
     name never stands in for missing or different metadata. Nothing falls back
     to "the newest file".
     """
+    return list(_matching_transcripts(agent, cwd, home, environ, session_id))
+
+
+def _matching_transcripts(
+    agent: str,
+    cwd: Path,
+    home: Path,
+    environ: Mapping[str, str] | None,
+    session_id: str | None,
+) -> Iterator[Path]:
     (directory,) = transcript_locations(agent, cwd, home, environ)
     if agent == "claude-code":
-        candidates = _sorted_by_mtime(directory.glob("*.jsonl"))
+        paths = _transcript_files(directory, "*.jsonl", recursive=False)
         if session_id is not None:
-            candidates = [path for path in candidates if path.stem == session_id]
+            paths = (path for path in paths if path.stem == session_id)
     else:
         pattern = "*.jsonl" if agent == "codex" else "*.json"
-        candidates = _sorted_by_mtime(
-            path for path in directory.rglob(pattern) if path.name != "settings.json"
-        )
-    for candidate in candidates:
-        metadata = transcript_metadata(candidate)
+        paths = _transcript_files(directory, pattern, recursive=True)
+    for candidate in _sorted_by_mtime(paths):
+        try:
+            metadata = transcript_metadata(candidate)
+        except OSError:
+            # One file may disappear or become unreadable after enumeration.
+            # Other confirmed sessions must remain discoverable.
+            continue
         if metadata.cwd is None or not same_path(metadata.cwd, cwd):
             continue
         if session_id is not None and metadata.session_id != session_id:
             continue
-        return candidate
-    return None
+        yield candidate
+
+
+def _transcript_files(directory: Path, pattern: str, *, recursive: bool) -> Iterator[Path]:
+    if recursive:
+        # os.walk skips unreadable or vanished subdirectories independently,
+        # so a failure in one project does not hide sessions in its siblings.
+        for folder, _directories, filenames in os.walk(directory):
+            for name in filenames:
+                if name != "settings.json" and Path(name).match(pattern):
+                    yield Path(folder) / name
+        return
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if Path(entry.name).match(pattern):
+                    yield Path(entry.path)
+    except OSError:
+        return
 
 
 @dataclass(frozen=True)
@@ -1411,5 +1457,13 @@ def _newest(paths: Iterable[Path]) -> Path | None:
 
 
 def _sorted_by_mtime(paths: Iterable[Path]) -> list[Path]:
-    files = [path for path in paths if path.is_file()]
-    return sorted(files, key=lambda path: path.stat().st_mtime, reverse=True)
+    files: list[tuple[int, Path]] = []
+    for path in paths:
+        try:
+            metadata = path.stat()
+        except OSError:
+            continue
+        if stat.S_ISREG(metadata.st_mode):
+            files.append((metadata.st_mtime_ns, path))
+    files.sort(key=lambda item: item[0], reverse=True)
+    return [path for _modified, path in files]

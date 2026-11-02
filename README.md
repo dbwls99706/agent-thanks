@@ -5,9 +5,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/dbwls99706/agent-thanks/blob/main/LICENSE)
 <a href="https://smollaunch.com" target="_blank" rel="noopener"><img src="https://smollaunch.com/badges/featured.svg" alt="agent-thanks - Featured on Smol Launch" loading="lazy" width="150" height="36"></a>
 
-**Find the open-source repositories your coding agent actually used, then thank them with a Star.**
+**Find the open-source repositories used in your coding work, then thank them with a Star.**
 
-`agent-thanks` turns one AI coding task into a trustworthy shortlist of open-source repositories worth thanking. It checks project changes and coding-agent activity, shows the evidence behind each match, then asks you before every GitHub Star.
+`agent-thanks` turns coding work into a shortlist of open-source repositories worth thanking. It checks project changes, recorded CLI commands, and coding-agent activity, shows the evidence behind each match, then asks you before every GitHub Star.
 
 The evidence engine is the safety layer. **The product goal is simple: make it easy to notice the open source your agent relied on and leave a visible thank-you.**
 
@@ -64,6 +64,71 @@ GitHub Star
 ```
 
 No unattended Star mode exists. A Star always requires an interactive terminal and an explicit human decision.
+
+## Record your CLI work
+
+Capture a command while you run it, then review the repositories it used:
+
+```bash
+agent-thanks exec -- git clone https://github.com/psf/requests.git
+agent-thanks thanks --dry-run
+agent-thanks thanks
+```
+
+`exec` runs the command in the current directory, preserves its terminal input
+and output, and returns its exit status. Use `--repo PATH` before `--` to choose
+another working/project directory. The private local log records argv and the
+actual outcome, so supported successful clone and Git-install commands can
+provide verified evidence without `--trust-session`. Output is not recorded.
+
+It captures the outer command you run, rather than tracing its nested
+subprocesses. Use agent transcripts to inspect work performed inside a coding
+agent. Shell expressions require an explicit shell; uncertain compound actions
+remain review-only under the same evidence rules.
+
+Captured records are automatically included in later scans of that project,
+including after the work has been committed.
+
+## Review several agent sessions together
+
+```bash
+agent-thanks thanks --all-sessions --dry-run
+agent-thanks thanks --all-sessions
+agent-thanks thanks --all-sessions --from codex
+```
+
+`--all-sessions` collects all discoverable transcripts whose recorded project
+directory matches the selected project. `--from` limits it to one agent.
+Explicit `--session` files can be added too. Duplicate paths and repository
+candidates are combined, and conflicting or missing outcomes do not become
+verified success. The default remains the newest matching agent transcript,
+plus this project's locally captured commands.
+
+## Keep a receipt and undo a batch
+
+```bash
+agent-thanks history
+agent-thanks history --json
+agent-thanks undo --last --dry-run
+agent-thanks undo --last
+agent-thanks undo --receipt RECEIPT_ID
+```
+
+Live Stars save a private receipt before the first request and update it after
+each confirmed response. `history` reads those local receipts without contacting
+GitHub. `undo` selects only confirmed Stars from a receipt, checks that you are
+authenticated as its account, and asks for each repository plus final approval.
+Existing Stars skipped during the original batch are not recorded for undo.
+
+Interrupted or timed-out requests can leave an **unconfirmed** outcome. It is
+shown as `pending` and excluded from undo because the tool cannot prove what
+happened remotely. Confirmed entries from a partial batch remain available
+after restarting the command.
+
+Receipts belong to the selected project directory. `thanks --repo PATH` saves
+them there. `star report.json` uses the report's directory; hook reports inside
+`.agent-thanks/` use the enclosing project. Use `star report.json --project PATH`
+to choose explicitly, and pass the same `--repo PATH` to `history` and `undo`.
 
 ## Try it safely in 30 seconds
 
@@ -133,6 +198,7 @@ For live Stars, `agent-thanks` intentionally makes automation stop before the so
 - there is no approve-all or unattended Star mode,
 - a final confirmation is required before mutations,
 - partial failures print an exact undo command,
+- confirmed actions are saved in account-bound receipts for later review,
 - `unstar` can revoke Stars created by mistake.
 
 This keeps the useful automation while preserving the meaning of a GitHub Star.
@@ -220,6 +286,7 @@ The Markdown export removes absolute local directory prefixes and is suitable fo
 | Codex transcript / hooks | Repository-use commands and provenance prose | High when success is explicit |
 | Gemini transcript | Repository references and provenance review | Command success is review-only today |
 | Plain-text log | Commands without machine-verifiable results | Review-only unless `--trust-session` is supplied |
+| `exec` capture log | Direct CLI commands with matching start and recorded result | High for supported successful repository-use commands |
 
 Supported repository-use commands include Git clone and submodule operations plus Git-based installs through pip, uv, npm, pnpm, Yarn, Cargo, and Go tooling.
 
@@ -262,12 +329,24 @@ Codex hooks and Gemini `AfterAgent` integration are supported. Exact setup, tran
 | Transcript scan | Transcript contents stay local |
 | Package resolution | Sends package names to PyPI, npm, or crates.io unless `--offline` is used |
 | `review` / `export` | None |
+| `exec` | The command you choose has its normal network behavior; capture itself stays local |
+| `history` / `undo --dry-run` | None |
 | `doctor` | Checks the authenticated GitHub account |
 | Live Star / Unstar | Uses the GitHub API for the repositories you explicitly approve |
 
 Hook logs live under `.agent-thanks/` and are ignored by their own `.gitignore`. On POSIX, state directories and files are tightened to owner-only permissions. Symbolic links are refused in the private state path.
 
-Logs can contain raw shell commands, including secrets typed into commands. They are pruned after 30 days and can be deleted at any time.
+Logs can contain raw shell commands, including secrets typed into commands.
+Stop hooks prune whole session log files that have not been updated for 30 days.
+The cumulative CLI capture file keeps earlier argv entries while it is active;
+exec-only workflows do not run hook cleanup. Delete `executions.jsonl` to clear
+those captured commands. You can delete local logs at any time.
+
+CLI captures also retain raw argv and live under `.agent-thanks/sessions/`.
+Avoid putting secrets directly in command arguments. Star receipts under
+`.agent-thanks/receipts/` contain account names, project paths, repositories, and
+confirmed/pending states, without credentials or command output. Receipt files
+are retained until you delete them, so earlier batches remain reviewable.
 
 ## What a Star means here
 

@@ -4,7 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
-## 0.6.1 - 2026-11-02
+## 0.7.0 - 2026-11-02
+
+- Add `agent-thanks exec -- COMMAND ...` for people and CLI tools to capture
+  real execution outcomes locally. Supported successful repository-use commands
+  become evidence without a plain-text attestation; failures, interrupted runs,
+  damaged records, and unconfirmed outcomes stay review-only. Command output is
+  inherited by the terminal and is not stored in the capture log.
+- Add `--all-sessions` to collect matching Claude Code, Codex, and Gemini
+  transcripts for one project, with `--from` as an optional agent filter. Exact
+  project/session identities and conflicting-result checks still apply.
+- Save private, account-bound Star receipts before requests and after confirmed
+  responses. Add read-only `history`/`history --json` and interactive `undo
+  --last`/`undo --receipt ID`. Undo excludes unconfirmed outcomes, verifies the
+  account, and requires individual decisions plus final confirmation.
+- Keep quoted shell operators as arguments instead of allowing quoted text to
+  invent successful commands. Actual safe command chains remain supported.
+
 
 - Resolve renamed Cargo dependencies by their published package names. Keep
   dependencies with Cargo patches/replacements, uv source overrides, or
