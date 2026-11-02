@@ -161,6 +161,20 @@ agent-thanks thanks --base HEAD~1 --from codex
 
 `run` remains available as the lower-level compatibility command. Unlike `thanks`, it does not auto-detect a coding agent.
 
+## Manual and other CLI sessions
+
+Project changes can come from a person or any CLI; newly declared dependencies
+are checked the same way. You can also scan a saved terminal log:
+
+```bash
+agent-thanks thanks --session terminal.log
+```
+
+Plain-text logs do not prove that a command succeeded, so their commands remain
+review-only. If you have checked that the commands succeeded, attest to that
+explicitly with `--trust-session`. Each eligible repository still requires your
+approval before a Star. A URL mentioned in the log is not enough on its own.
+
 ## Read-only workflows
 
 You can use the evidence engine without ever authenticating to GitHub.

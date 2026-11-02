@@ -460,7 +460,7 @@ def _execute_stars(
                 print(f"Starred: https://github.com/{candidate.repository}")
             if index + 1 < len(selected):
                 time.sleep(0.25)
-    except (GitHubError, OSError):
+    except (GitHubError, OSError, KeyboardInterrupt):
         if newly_starred:
             print("The batch stopped after a partial update.")
             _print_undo(newly_starred)
