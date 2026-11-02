@@ -1,17 +1,57 @@
 from contextlib import redirect_stderr, redirect_stdout
-from io import StringIO
+from io import BytesIO, StringIO
 import json
 import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+from urllib.error import HTTPError
 
 from agent_thanks.entry import PROJECT_URL, _detect_agent, main
 from agent_thanks.models import Report
 
 
 class ThanksWorkflowTests(unittest.TestCase):
+    def test_token_transport_only_sends_put_after_both_confirmations(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = root / "terminal.log"
+            session.write_text("git clone https://github.com/used/manual.git\n", encoding="utf-8")
+            for final_answer in ("n", "y"):
+                with self.subTest(final_answer=final_answer):
+                    requests = []
+                    def respond(request, **kwargs):
+                        requests.append((request.method, request.full_url))
+                        response = MagicMock()
+                        if request.full_url.endswith("/user"):
+                            response.status = 200
+                            response.read.return_value = b'{"login":"octocat"}'
+                        elif request.method == "GET":
+                            raise HTTPError(request.full_url, 404, "Not Found", None, BytesIO(b"{}"))
+                        else:
+                            response.status = 204
+                            response.read.return_value = b""
+                            self.assertEqual(request.data, b"")
+                        response.__enter__.return_value = response
+                        return response
+                    with patch.dict(os.environ, {"GH_TOKEN": "test-token"}), patch(
+                        "agent_thanks.github.urlopen", side_effect=respond
+                    ), patch("agent_thanks.cli._require_interactive_terminal"), patch(
+                        "builtins.input", side_effect=["y", final_answer]
+                    ), redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                        self.assertEqual(main([
+                            "thanks", "--repo", str(root), "--session", str(session),
+                            "--trust-session", "--offline", "--output", str(root / "report.json"),
+                        ]), 0)
+                    expected = [
+                        ("GET", "https://api.github.com/user"),
+                        ("GET", "https://api.github.com/user/starred/used/manual"),
+                    ]
+                    if final_answer == "y":
+                        expected.append(("PUT", "https://api.github.com/user/starred/used/manual"))
+                    self.assertEqual(requests, expected)
+
     @patch("agent_thanks.cli.GitHubClient")
     def test_manual_cli_log_requires_attestation_before_star_approval(self, client_type) -> None:
         with tempfile.TemporaryDirectory() as directory:

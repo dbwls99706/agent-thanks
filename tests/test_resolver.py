@@ -4,6 +4,17 @@ from agent_thanks.resolver import PackageRepositoryResolver
 
 
 class ResolverTests(unittest.TestCase):
+    def test_source_code_labels_take_priority_over_a_github_homepage(self) -> None:
+        for label in ("Source Code", "source-code", "SOURCE_CODE", "source.code"):
+            with self.subTest(label=label):
+                resolver = PackageRepositoryResolver(fetcher=lambda _: {
+                    "info": {"project_urls": {
+                        "Homepage": "https://github.com/website/docs",
+                        label: "https://github.com/actual/source",
+                    }}
+                })
+                self.assertEqual(resolver.resolve("pypi", "demo"), "actual/source")
+
     def test_resolves_pypi_preferred_source_url(self) -> None:
         resolver = PackageRepositoryResolver(
             fetcher=lambda _: {

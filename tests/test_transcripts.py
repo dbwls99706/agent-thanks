@@ -936,6 +936,23 @@ class UnresolvablePathTests(unittest.TestCase):
 
 
 class TranscriptLocationTests(unittest.TestCase):
+    def test_other_projects_cannot_hide_a_match_beyond_two_hundred_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            cwd = home / "project"
+            sessions = home / ".codex" / "sessions"
+            sessions.mkdir(parents=True)
+            match = sessions / "matching.jsonl"
+            write_jsonl(match, [{"cwd": str(cwd), "sessionId": "mine"}])
+            os.utime(match, (1, 1))
+            for index in range(200):
+                other = sessions / f"other-{index}.jsonl"
+                write_jsonl(other, [{"cwd": str(home / "other"), "sessionId": str(index)}])
+                os.utime(other, (index + 2, index + 2))
+            self.assertEqual(locate_transcript("codex", cwd, home, {}), match)
+            self.assertEqual(locate_transcript("codex", cwd, home, {}, session_id="mine"), match)
+            self.assertIsNone(locate_transcript("codex", cwd, home, {}, session_id="missing"))
+
     def test_large_gemini_documents_keep_exact_project_and_session_matching(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)

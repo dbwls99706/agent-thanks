@@ -153,7 +153,14 @@ class GitHubClient:
             command.extend(["--jq", jq])
         if silent:
             command.append("--silent")
-        result = subprocess.run(command, capture_output=True, text=True)
+        try:
+            result = subprocess.run(
+                command, capture_output=True, text=True, timeout=self.timeout
+            )
+        except subprocess.TimeoutExpired as error:
+            raise GitHubError(
+                f"GitHub CLI request timed out after {self.timeout:g} seconds"
+            ) from error
         if check and result.returncode != 0:
             self._raise_gh_error(result)
         return result

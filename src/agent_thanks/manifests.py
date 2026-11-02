@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import json
 from pathlib import PurePosixPath
 import re
+import shlex
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -26,9 +27,11 @@ class Dependency:
     @property
     def identity(self) -> tuple[str, str, str]:
         """Ecosystem, normalized name, and the pinned repository source, if any."""
+        name = self.name.casefold()
+        name = re.sub(r"[-_.]+", "-", name) if self.ecosystem == "pypi" else name.replace("_", "-")
         return (
             self.ecosystem,
-            self.name.casefold().replace("_", "-"),
+            name,
             (self.repository or "").casefold(),
         )
 
@@ -38,6 +41,9 @@ _PACKAGE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*")
 _EDITABLE_OPTION = re.compile(r"(?:--editable(?:=|\s+)|-e(?:=|\s*))(.*)", re.DOTALL)
 _VCS_SCHEME_PREFIXES = ("git+", "hg+", "svn+", "bzr+")
 _VCS_PREFIXES = _VCS_SCHEME_PREFIXES + ("git@",)
+_ALTERNATE_SOURCE_OPTION = re.compile(
+    r"^(?:--(?:extra-index-url|index-url|find-links|no-index)(?:\s|=|$)|-[if](?:\s|=|\S))"
+)
 _NON_REGISTRY_SPEC_PREFIXES = (
     "git+",
     "git://",
@@ -103,6 +109,10 @@ def _spec_from_registry(spec: object) -> bool:
 
 
 def _dependency_from_spec(ecosystem: str, name: str, spec: object) -> Dependency:
+    if ecosystem == "crates" and isinstance(spec, dict) and "package" in spec:
+        name = spec["package"]
+        if not isinstance(name, str) or not name:
+            raise ValueError("invalid Cargo package name")
     repository = repository_from_metadata_url(spec)
     if isinstance(spec, dict):
         repository = repository or repository_from_metadata_url(spec.get("git"))
@@ -168,6 +178,7 @@ def _parse_requirement(value: str) -> Dependency | None:
 
 def _parse_requirements(text: str) -> list[Dependency]:
     dependencies: list[Dependency] = []
+    alternate_sources = False
     continued = ""
     for raw_line in text.splitlines():
         line = continued + raw_line.strip()
@@ -175,9 +186,16 @@ def _parse_requirements(text: str) -> list[Dependency]:
             continued = line[:-1]
             continue
         continued = ""
+        if _ALTERNATE_SOURCE_OPTION.match(line):
+            alternate_sources = True
         dependency = _parse_requirement(line)
         if dependency is not None:
             dependencies.append(dependency)
+    if alternate_sources:
+        dependencies = [
+            Dependency(item.ecosystem, item.name, from_registry=False)
+            if item.from_registry else item for item in dependencies
+        ]
     return _unique(dependencies)
 
 
@@ -213,6 +231,12 @@ def _parse_pyproject(text: str) -> list[Dependency]:
                     if dependency is not None:
                         dependencies.append(dependency)
 
+    uv_sources = data.get("tool", {}).get("uv", {}).get("sources", {})
+    overridden = {Dependency("pypi", name).identity[1] for name in uv_sources}
+    dependencies = [
+        Dependency(item.ecosystem, item.name, from_registry=False)
+        if item.identity[1] in overridden else item for item in dependencies
+    ]
     return _unique(dependencies)
 
 
@@ -244,39 +268,74 @@ def _parse_cargo(text: str) -> list[Dependency]:
         for section in ("dependencies", "dev-dependencies", "build-dependencies"):
             for name, spec in target_config.get(section, {}).items():
                 dependencies.append(_dependency_from_spec("crates", name, spec))
+    patched = set()
+    for patches in data.get("patch", {}).values():
+        for name, spec in patches.items():
+            patched.add(_dependency_from_spec("crates", name, spec).identity[1])
+    for package_id in data.get("replace", {}):
+        name = package_id.rsplit("#", 1)[-1].split(":", 1)[0]
+        patched.add(Dependency("crates", name).identity[1])
+    # A declared patch is not proof that Cargo selected it; selection also
+    # depends on versions and the lockfile. Do not guess either upstream.
+    dependencies = [
+        Dependency(item.ecosystem, item.name, from_registry=False)
+        if item.identity[1] in patched else item for item in dependencies
+    ]
     return _unique(dependencies)
 
 
 def _parse_go_mod(text: str) -> list[Dependency]:
-    dependencies: list[Dependency] = []
-    in_require_block = False
+    required: list[tuple[str, str]] = []
+    replacements: dict[tuple[str, str | None], str | None] = {}
+    block: str | None = None
     for raw_line in text.splitlines():
-        if "// indirect" in raw_line:
-            continue
         line = raw_line.split("//", 1)[0].strip()
         if not line:
             continue
-        if line == "require (":
-            in_require_block = True
+        tokens = shlex.split(line)
+        if tokens == [")"]:
+            block = None
             continue
-        if in_require_block and line == ")":
-            in_require_block = False
-            continue
-        if line.startswith("require "):
-            value = line.removeprefix("require ").strip()
-        elif in_require_block:
-            value = line
+        if tokens[0] in {"require", "replace"}:
+            directive, values = tokens[0], tokens[1:]
+        elif block is not None:
+            directive, values = block, tokens
         else:
             continue
-
-        values = value.split(maxsplit=1)
-        if not values:
+        if values == ["("]:
+            block = directive
             continue
-        module = values[0]
+        if directive == "require":
+            if re.search(r"//\s*indirect\b", raw_line):
+                continue
+            if len(values) != 2:
+                raise ValueError("invalid Go require directive")
+            required.append((values[0], values[1]))
+            continue
+        if values.count("=>") != 1:
+            raise ValueError("invalid Go replace directive")
+        arrow = values.index("=>")
+        old, new = values[:arrow], values[arrow + 1:]
+        if len(old) not in {1, 2} or len(new) not in {1, 2}:
+            raise ValueError("invalid Go replace directive")
+        key = old[0], old[1] if len(old) == 2 else None
+        if key in replacements:
+            raise ValueError("conflicting Go replace directives")
+        # Local replacements have no module version and cannot identify which
+        # upstream repository's code is actually in use.
+        replacements[key] = new[0] if len(new) == 2 else None
+
+    if block is not None:
+        raise ValueError("unterminated Go directive block")
+    dependencies: list[Dependency] = []
+    for module, version in required:
+        specific, general = (module, version), (module, None)
+        replaced = specific in replacements or general in replacements
+        target = replacements.get(specific, replacements.get(general)) if replaced else module
         repository = None
-        if module.casefold().startswith("github.com/"):
-            repository = repository_from_metadata_url(f"https://{module}")
-        dependencies.append(Dependency("go", module, repository))
+        if target is not None and target.casefold().startswith("github.com/"):
+            repository = repository_from_metadata_url(f"https://{target}")
+        dependencies.append(Dependency("go", module, repository, from_registry=not replaced))
     return _unique(dependencies)
 
 

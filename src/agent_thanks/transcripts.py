@@ -664,7 +664,7 @@ def locate_transcript(
         candidates = _sorted_by_mtime(
             path for path in directory.rglob(pattern) if path.name != "settings.json"
         )
-    for candidate in candidates[:200]:
+    for candidate in candidates:
         metadata = transcript_metadata(candidate)
         if metadata.cwd is None or not same_path(metadata.cwd, cwd):
             continue

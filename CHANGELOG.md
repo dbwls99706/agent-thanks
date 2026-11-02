@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.6.1 - 2026-11-02
+
+- Resolve renamed Cargo dependencies by their published package names. Keep
+  dependencies with Cargo patches/replacements, uv source overrides, or
+  requirements index/find-links options unresolved when the selected source
+  cannot be established, instead of crediting the default public upstream.
+- Attribute Go dependencies to applicable `replace` targets. A local or
+  non-GitHub replacement never recommends the unused upstream repository, and
+  malformed or conflicting replacements fail the scan instead of guessing.
+- Treat equivalent Python distribution name spellings as the same dependency,
+  avoiding new-use claims from punctuation or case changes alone.
+- Recognize PyPI `Source Code` link labels before falling back to a homepage,
+  and send the current client version in registry requests.
+- Find matching transcripts even when more than 200 newer files belong to
+  other projects; exact project and session matching is still required.
+- Bound GitHub CLI requests by the configured timeout and report timeouts as
+  normal actionable errors.
 - Preserve Unicode, tabs, and newlines in Git manifest paths when scanning
   tracked changes, untracked files, and baseline dependencies, including on
   systems whose default text encoding is not UTF-8. Moving a

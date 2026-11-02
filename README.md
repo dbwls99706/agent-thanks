@@ -2,7 +2,7 @@
 
 [![Tests](https://github.com/dbwls99706/agent-thanks/actions/workflows/tests.yml/badge.svg)](https://github.com/dbwls99706/agent-thanks/actions/workflows/tests.yml)
 [![Python 3.10-3.14](https://img.shields.io/badge/Python-3.10%E2%80%933.14-3776AB.svg)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/dbwls99706/agent-thanks/blob/main/LICENSE)
 <a href="https://smollaunch.com" target="_blank" rel="noopener"><img src="https://smollaunch.com/badges/featured.svg" alt="agent-thanks - Featured on Smol Launch" loading="lazy" width="150" height="36"></a>
 
 **Find the open-source repositories your coding agent actually used, then thank them with a Star.**
@@ -67,16 +67,16 @@ No unattended Star mode exists. A Star always requires an interactive terminal a
 
 ## Try it safely in 30 seconds
 
-Install from GitHub:
+Install the published package:
 
 ```bash
-pipx install git+https://github.com/dbwls99706/agent-thanks.git
+pipx install agent-thanks
 ```
 
 Without `pipx`:
 
 ```bash
-python -m pip install "https://github.com/dbwls99706/agent-thanks/archive/refs/heads/main.zip"
+python -m pip install agent-thanks
 ```
 
 Then run the built-in demo:
@@ -100,7 +100,7 @@ Would star: https://github.com/BehaviorTree/BehaviorTree.CPP
 ```
 
 <p align="center">
-  <img src="docs/assets/terminal-walkthrough.svg" alt="Terminal walkthrough showing the detect, inspect, approve, and thank flow." width="900">
+  <img src="https://raw.githubusercontent.com/dbwls99706/agent-thanks/main/docs/assets/terminal-walkthrough.svg" alt="Terminal walkthrough showing the detect, inspect, approve, and thank flow." width="900">
 </p>
 
 ## Why the evidence step exists
@@ -225,6 +225,17 @@ Supported repository-use commands include Git clone and submodule operations plu
 
 Package names from PyPI, npm, and crates.io can be mapped through public registry metadata. `--offline` disables those lookups. GitHub-hosted Go modules, submodules, and direct Git URLs can resolve locally.
 
+Go `replace` directives are applied before attributing a dependency. Renamed
+Cargo dependencies use their published package names. Dependencies with Cargo
+patches/replacements, uv source overrides, or requirements index/find-links
+options stay unresolved when the selected source is uncertain; they are not
+silently mapped to the default public upstream. Explicit Git pins and verified
+session actions can still provide repository evidence.
+
+This is a manifest and session evidence scan, not a complete audit of installed
+packages. Lockfile selection, workspace inheritance, and configuration outside
+the scanned manifests are not reconstructed.
+
 ## Coding-agent integrations
 
 ### Claude Code
@@ -240,7 +251,7 @@ The plugin records supported shell events and announces newly verified open-sour
 
 ### Codex and Gemini
 
-Codex hooks and Gemini `AfterAgent` integration are supported. Exact setup, transcript lookup behavior, and agent-specific limitations are documented in [Coding-agent integrations](docs/integrations.md).
+Codex hooks and Gemini `AfterAgent` integration are supported. Exact setup, transcript lookup behavior, and agent-specific limitations are documented in [Coding-agent integrations](https://github.com/dbwls99706/agent-thanks/blob/main/docs/integrations.md).
 
 ## Privacy
 
@@ -277,11 +288,11 @@ A Star is a small, visible thank-you. It is not payment, legal attribution, lice
 
 ## Documentation
 
-- [Coding-agent integrations](docs/integrations.md)
-- [Usage recipes](docs/recipes.md)
-- [Design and trust model](docs/design.md)
-- [Troubleshooting](docs/troubleshooting.md)
-- [Changelog](CHANGELOG.md)
+- [Coding-agent integrations](https://github.com/dbwls99706/agent-thanks/blob/main/docs/integrations.md)
+- [Usage recipes](https://github.com/dbwls99706/agent-thanks/blob/main/docs/recipes.md)
+- [Design and trust model](https://github.com/dbwls99706/agent-thanks/blob/main/docs/design.md)
+- [Troubleshooting](https://github.com/dbwls99706/agent-thanks/blob/main/docs/troubleshooting.md)
+- [Changelog](https://github.com/dbwls99706/agent-thanks/blob/main/CHANGELOG.md)
 
 ## Status
 
@@ -291,7 +302,7 @@ The current implementation is heavily tested across Python 3.10 through 3.14 and
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). If you find a case where uncertain evidence is promoted to verified use, please report it as a correctness bug.
+See [CONTRIBUTING.md](https://github.com/dbwls99706/agent-thanks/blob/main/CONTRIBUTING.md). If you find a case where uncertain evidence is promoted to verified use, please report it as a correctness bug.
 
 ## License
 
